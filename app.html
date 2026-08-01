@@ -540,6 +540,32 @@
     });
   }
 
+  function loadImageEl(src){
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error('이미지를 읽을 수 없어요.'));
+      img.src = src;
+    });
+  }
+
+  // 업로드한 이미지를 원본 그대로 저장하면 저장 파일과 메모리가 급격히 커지므로,
+  // 긴 변 기준 MAX_IMAGE_DIM을 넘는 경우에만 축소해서 데이터 크기를 줄인다.
+  const MAX_IMAGE_DIM = 1600;
+  const IMAGE_QUALITY = 0.85;
+  async function processUploadedFile(file){
+    const dataUrl = await readFileAsDataUrl(file);
+    const img = await loadImageEl(dataUrl);
+    const scale = Math.min(1, MAX_IMAGE_DIM / Math.max(img.width, img.height));
+    if(scale === 1) return dataUrl; // 이미 충분히 작으면 그대로 사용
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(img.width * scale);
+    canvas.height = Math.round(img.height * scale);
+    canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+    const mime = file.type === 'image/png' ? 'image/png' : 'image/jpeg';
+    return canvas.toDataURL(mime, IMAGE_QUALITY);
+  }
+
   function stripExt(name){
     const idx = name.lastIndexOf('.');
     return idx > 0 ? name.slice(0, idx) : name;
@@ -627,210 +653,141 @@
     });
   }
 
-  // ---------- sidebar: category buttons ----------
-  function getCategoryName(id){
-    const c = categories.find(x => x.id === id);
-    return c ? c.name : null;
-  }
+  // ---------- folders & categories share the same chip-bar + modal pattern ----------
+  // (둘 다 "전체 목록 + 칩 렌더링 + 생성/이름변경 모달 + 삭제" 구조가 동일해서
+  //  타입별 설정(cfg)만 다르게 넣어 하나의 구현을 재사용한다.)
+  function makeTaxonomy(cfg){
+    function getName(id){
+      const item = cfg.getList().find(x => x.id === id);
+      return item ? item.name : null;
+    }
 
-  function categoryCount(id){
-    if(id === 'ALL') return items.length;
-    if(id === 'NONE') return items.filter(i => !i.categoryId).length;
-    return items.filter(i => i.categoryId === id).length;
-  }
+    function count(id){
+      if(id === 'ALL') return items.length;
+      if(id === 'NONE') return items.filter(i => !i[cfg.itemField]).length;
+      return items.filter(i => i[cfg.itemField] === id).length;
+    }
 
-  // ---------- categories (main content chip bar) ----------
-  function categoryChipHtml(id, name, count, deletable){
-    const delBtn = deletable ? `<span class="del-x" data-category-chip-del="${escapeHtml(id)}" title="삭제">✕</span>` : '';
-    return `<div class="folder-chip ${activeCategory===id?'active':''}" data-category-chip="${escapeHtml(id)}" ${deletable?'title="더블클릭: 이름 변경"':''}>🏷 ${escapeHtml(name)} <span class="count">${count}</span>${delBtn}</div>`;
-  }
+    function chipHtml(id, name, cnt, deletable){
+      const delBtn = deletable ? `<span class="del-x" data-chip-del="${escapeHtml(id)}" title="삭제">✕</span>` : '';
+      const active = cfg.getActive() === id ? 'active' : '';
+      return `<div class="folder-chip ${active}" data-chip="${escapeHtml(id)}" ${deletable?'title="더블클릭: 이름 변경"':''}>${cfg.icon} ${escapeHtml(name)} <span class="count">${cnt}</span>${delBtn}</div>`;
+    }
 
-  function renderCategoryFolderBar(){
-    const bar = $('categoryFolderBar');
-    if(!bar) return;
-    let html = categoryChipHtml('ALL', '카테고리', categoryCount('ALL'), false);
-    html += categories.map(c => categoryChipHtml(c.id, c.name, categoryCount(c.id), true)).join('');
-    html += `<div class="folder-chip add" id="addCategoryChip">카테고리 생성</div>`;
-    bar.innerHTML = html;
+    function renderBar(){
+      const bar = $(cfg.barId);
+      if(!bar) return;
+      let html = chipHtml('ALL', cfg.allLabel, count('ALL'), false);
+      if(cfg.includeNone) html += chipHtml('NONE', '미분류', count('NONE'), false);
+      html += cfg.getList().map(x => chipHtml(x.id, x.name, count(x.id), true)).join('');
+      html += `<div class="folder-chip add" data-chip-add>${cfg.addLabel}</div>`;
+      bar.innerHTML = html;
 
-    bar.querySelectorAll('[data-category-chip]').forEach(chip => {
-      chip.addEventListener('click', (e) => {
-        if(e.target.closest('[data-category-chip-del]')) return;
-        activeCategory = chip.dataset.categoryChip;
-        activePart = 'ALL';
-        render();
+      bar.querySelectorAll('[data-chip]').forEach(chip => {
+        chip.addEventListener('click', (e) => {
+          if(e.target.closest('[data-chip-del]')) return;
+          cfg.setActive(chip.dataset.chip);
+          if(cfg.onActivate) cfg.onActivate();
+          render();
+        });
+        if(chip.title){
+          chip.addEventListener('dblclick', () => openModal(chip.dataset.chip));
+        }
       });
-      if(chip.title){
-        chip.addEventListener('dblclick', () => openCategoryModal(chip.dataset.categoryChip));
-      }
-    });
-    bar.querySelectorAll('[data-category-chip-del]').forEach(x => {
-      x.addEventListener('click', (e) => { e.stopPropagation(); deleteCategory(x.dataset.categoryChipDel); });
-    });
-    const addChip = $('addCategoryChip');
-    if(addChip) addChip.addEventListener('click', () => openCategoryModal());
-  }
-
-  // 레퍼런스/폴더 추가 모달과 같은 형태의 카테고리 생성/이름변경 모달 (메인 화면 카테고리 바용)
-  function openCategoryModal(id){
-    editingCategoryId = id || null;
-    const c = editingCategoryId ? categories.find(x => x.id === editingCategoryId) : null;
-    $('categoryModalTitle').textContent = c ? '카테고리 이름 변경' : '새 카테고리 만들기';
-    $('categoryNameInput').value = c ? c.name : '';
-    $('categoryFormErr').style.display = 'none';
-    categoryOverlay.classList.add('open');
-    setTimeout(() => $('categoryNameInput').focus(), 0);
-  }
-
-  function closeCategoryModal(){
-    categoryOverlay.classList.remove('open');
-    editingCategoryId = null;
-  }
-
-  function showCategoryErr(msg){
-    const e = $('categoryFormErr');
-    e.textContent = msg;
-    e.style.display = 'block';
-  }
-
-  function saveCategory(){
-    const name = $('categoryNameInput').value.trim();
-    if(!name){ showCategoryErr('카테고리 이름을 입력해주세요.'); return; }
-    if(categories.some(c => c.name === name && c.id !== editingCategoryId)){
-      showCategoryErr('이미 같은 이름의 카테고리가 있어요.');
-      return;
-    }
-    if(editingCategoryId){
-      const c = categories.find(x => x.id === editingCategoryId);
-      c.name = name;
-    } else {
-      const c = { id: uid('c'), name };
-      categories.push(c);
-      activeCategory = c.id;
-      activePart = 'ALL';
-    }
-    closeCategoryModal();
-    afterDataChange();
-  }
-
-  function deleteCategory(id){
-    const c = categories.find(x => x.id === id);
-    if(!c) return;
-    if(!confirm(`"${c.name}" 카테고리를 삭제할까요? 카테고리가 지정된 레퍼런스는 삭제되지 않고 미분류로 이동해요.`)) return;
-    categories = categories.filter(x => x.id !== id);
-    items.forEach(i => { if(i.categoryId === id) i.categoryId = null; });
-    if(activeCategory === id) activeCategory = 'ALL';
-    afterDataChange();
-  }
-
-  function renderCategorySelectModal(){
-    const sel = $('categorySelectModal');
-    const prevVal = sel.value;
-    sel.innerHTML = '<option value="">미분류</option>' + categories.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
-    if([...sel.options].some(o => o.value === prevVal)) sel.value = prevVal;
-  }
-
-  // ---------- folders (main content) ----------
-  function getFolderName(id){
-    const f = folders.find(x => x.id === id);
-    return f ? f.name : null;
-  }
-
-  function folderCount(id){
-    if(id === 'ALL') return items.length;
-    if(id === 'NONE') return items.filter(i => !i.folderId).length;
-    return items.filter(i => i.folderId === id).length;
-  }
-
-  function folderChipHtml(id, name, count, deletable){
-    const delBtn = deletable ? `<span class="del-x" data-folder-del="${escapeHtml(id)}" title="삭제">✕</span>` : '';
-    return `<div class="folder-chip ${activeFolder===id?'active':''}" data-folder-chip="${escapeHtml(id)}" ${deletable?'title="더블클릭: 이름 변경"':''}>📁 ${escapeHtml(name)} <span class="count">${count}</span>${delBtn}</div>`;
-  }
-
-  function renderFolderBar(){
-    const bar = $('folderBar');
-    if(!bar) return;
-    let html = folderChipHtml('ALL', '전체', folderCount('ALL'), false);
-    html += folderChipHtml('NONE', '미분류', folderCount('NONE'), false);
-    html += folders.map(f => folderChipHtml(f.id, f.name, folderCount(f.id), true)).join('');
-    html += `<div class="folder-chip add" id="addFolderChip">+ 새 폴더</div>`;
-    bar.innerHTML = html;
-
-    bar.querySelectorAll('[data-folder-chip]').forEach(chip => {
-      chip.addEventListener('click', (e) => {
-        if(e.target.closest('[data-folder-del]')) return;
-        activeFolder = chip.dataset.folderChip;
-        render();
+      bar.querySelectorAll('[data-chip-del]').forEach(x => {
+        x.addEventListener('click', (e) => { e.stopPropagation(); remove(x.dataset.chipDel); });
       });
-      if(chip.title){
-        chip.addEventListener('dblclick', () => openFolderModal(chip.dataset.folderChip));
+      const addChip = bar.querySelector('[data-chip-add]');
+      if(addChip) addChip.addEventListener('click', () => openModal());
+    }
+
+    // 레퍼런스 추가 모달과 같은 형태의 생성/이름변경 모달
+    function openModal(id){
+      cfg.setEditingId(id || null);
+      const editingId = cfg.getEditingId();
+      const item = editingId ? cfg.getList().find(x => x.id === editingId) : null;
+      $(cfg.titleId).textContent = item ? `${cfg.typeLabel} 이름 변경` : `새 ${cfg.typeLabel} 만들기`;
+      $(cfg.nameInputId).value = item ? item.name : '';
+      $(cfg.errId).style.display = 'none';
+      cfg.overlay.classList.add('open');
+      setTimeout(() => $(cfg.nameInputId).focus(), 0);
+    }
+
+    function closeModal(){
+      cfg.overlay.classList.remove('open');
+      cfg.setEditingId(null);
+    }
+
+    function showErr(msg){
+      const e = $(cfg.errId);
+      e.textContent = msg;
+      e.style.display = 'block';
+    }
+
+    function save(){
+      const name = $(cfg.nameInputId).value.trim();
+      if(!name){ showErr(`${cfg.typeLabel} 이름을 입력해주세요.`); return; }
+      const list = cfg.getList();
+      const editingId = cfg.getEditingId();
+      if(list.some(x => x.name === name && x.id !== editingId)){
+        showErr(`이미 같은 이름의 ${cfg.typeLabel}가 있어요.`);
+        return;
       }
-    });
-    bar.querySelectorAll('[data-folder-del]').forEach(x => {
-      x.addEventListener('click', (e) => { e.stopPropagation(); deleteFolder(x.dataset.folderDel); });
-    });
-    const addChip = $('addFolderChip');
-    if(addChip) addChip.addEventListener('click', () => openFolderModal());
-  }
-
-  // 레퍼런스 추가 모달과 같은 형태의 폴더 생성/이름변경 모달
-  function openFolderModal(id){
-    editingFolderId = id || null;
-    const f = editingFolderId ? folders.find(x => x.id === editingFolderId) : null;
-    $('folderModalTitle').textContent = f ? '폴더 이름 변경' : '새 폴더 만들기';
-    $('folderNameInput').value = f ? f.name : '';
-    $('folderFormErr').style.display = 'none';
-    folderOverlay.classList.add('open');
-    setTimeout(() => $('folderNameInput').focus(), 0);
-  }
-
-  function closeFolderModal(){
-    folderOverlay.classList.remove('open');
-    editingFolderId = null;
-  }
-
-  function showFolderErr(msg){
-    const e = $('folderFormErr');
-    e.textContent = msg;
-    e.style.display = 'block';
-  }
-
-  function saveFolder(){
-    const name = $('folderNameInput').value.trim();
-    if(!name){ showFolderErr('폴더 이름을 입력해주세요.'); return; }
-    if(folders.some(f => f.name === name && f.id !== editingFolderId)){
-      showFolderErr('이미 같은 이름의 폴더가 있어요.');
-      return;
+      if(editingId){
+        const item = list.find(x => x.id === editingId);
+        item.name = name;
+      } else {
+        const item = { id: uid(cfg.idPrefix), name };
+        list.push(item);
+        cfg.setActive(item.id);
+        if(cfg.onActivate) cfg.onActivate();
+      }
+      closeModal();
+      afterDataChange();
     }
-    if(editingFolderId){
-      const f = folders.find(x => x.id === editingFolderId);
-      f.name = name;
-    } else {
-      const f = { id: uid('f'), name };
-      folders.push(f);
-      activeFolder = f.id;
+
+    function remove(id){
+      const list = cfg.getList();
+      const item = list.find(x => x.id === id);
+      if(!item) return;
+      if(!confirm(`"${item.name}" ${cfg.typeLabel}를 삭제할까요? ${cfg.containedPhrase} 레퍼런스는 삭제되지 않고 미분류로 이동해요.`)) return;
+      cfg.setList(list.filter(x => x.id !== id));
+      items.forEach(i => { if(i[cfg.itemField] === id) i[cfg.itemField] = null; });
+      if(cfg.getActive() === id) cfg.setActive('ALL');
+      afterDataChange();
     }
-    closeFolderModal();
-    afterDataChange();
+
+    function renderSelect(selectId){
+      const sel = $(selectId);
+      if(!sel) return;
+      const prevVal = sel.value;
+      sel.innerHTML = '<option value="">미분류</option>' + cfg.getList().map(x => `<option value="${x.id}">${escapeHtml(x.name)}</option>`).join('');
+      if([...sel.options].some(o => o.value === prevVal)) sel.value = prevVal;
+    }
+
+    return { getName, renderBar, openModal, closeModal, save, remove, renderSelect };
   }
 
-  function deleteFolder(id){
-    const f = folders.find(x => x.id === id);
-    if(!f) return;
-    if(!confirm(`"${f.name}" 폴더를 삭제할까요? 폴더에 담긴 레퍼런스는 삭제되지 않고 미분류로 이동해요.`)) return;
-    folders = folders.filter(x => x.id !== id);
-    items.forEach(i => { if(i.folderId === id) i.folderId = null; });
-    if(activeFolder === id) activeFolder = 'ALL';
-    afterDataChange();
-  }
+  const folderTaxonomy = makeTaxonomy({
+    getList: () => folders, setList: (v) => { folders = v; },
+    getActive: () => activeFolder, setActive: (v) => { activeFolder = v; },
+    getEditingId: () => editingFolderId, setEditingId: (v) => { editingFolderId = v; },
+    icon: '📁', typeLabel: '폴더', idPrefix: 'f', itemField: 'folderId',
+    barId: 'folderBar', allLabel: '전체', includeNone: true, addLabel: '+ 새 폴더',
+    overlay: folderOverlay, titleId: 'folderModalTitle', nameInputId: 'folderNameInput', errId: 'folderFormErr',
+    containedPhrase: '폴더에 담긴'
+  });
 
-  function renderFolderSelect(){
-    const sel = $('folderSelect');
-    if(!sel) return;
-    const prevVal = sel.value;
-    sel.innerHTML = '<option value="">미분류</option>' + folders.map(f => `<option value="${f.id}">${escapeHtml(f.name)}</option>`).join('');
-    if([...sel.options].some(o => o.value === prevVal)) sel.value = prevVal;
-  }
+  const categoryTaxonomy = makeTaxonomy({
+    getList: () => categories, setList: (v) => { categories = v; },
+    getActive: () => activeCategory, setActive: (v) => { activeCategory = v; },
+    getEditingId: () => editingCategoryId, setEditingId: (v) => { editingCategoryId = v; },
+    icon: '🏷', typeLabel: '카테고리', idPrefix: 'c', itemField: 'categoryId',
+    barId: 'categoryFolderBar', allLabel: '카테고리', includeNone: false, addLabel: '카테고리 생성',
+    overlay: categoryOverlay, titleId: 'categoryModalTitle', nameInputId: 'categoryNameInput', errId: 'categoryFormErr',
+    containedPhrase: '카테고리가 지정된',
+    onActivate: () => { activePart = 'ALL'; }
+  });
 
   // ---------- rendering ----------
   function allTags(){
@@ -909,10 +866,18 @@
     return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   }
 
+  // escapeHtml만으로는 javascript: 같은 위험한 스킴을 막지 못하므로,
+  // 링크로 쓰기 전에 허용된 스킴(http/https/data:image)인지 확인한다.
+  // (가져온 백업 JSON이 조작되어 있는 경우를 대비한 방어적 처리)
+  function safeHref(url){
+    const s = String(url ?? '').trim();
+    return /^(https?:|data:image\/)/i.test(s) ? s : '#';
+  }
+
   function matchesFilters(item){
     const q = $('searchInput').value.trim().toLowerCase();
     if(q){
-      const hay = [item.title, item.memo, getCategoryName(item.categoryId), ...item.tags].join(' ').toLowerCase();
+      const hay = [item.title, item.memo, categoryTaxonomy.getName(item.categoryId), ...item.tags].join(' ').toLowerCase();
       if(!hay.includes(q)) return false;
     }
     if(activeTags.size > 0){
@@ -935,11 +900,14 @@
     return copy;
   }
 
-  function render(){
-    renderPartTabs();
-    renderFolderBar();
-    renderCategoryFolderBar();
-    renderTagBar();
+  function debounce(fn, delay){
+    let t;
+    return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), delay); };
+  }
+
+  // 검색어 입력·정렬 변경은 폴더/카테고리/태그/파트 구성 자체를 바꾸지 않으므로
+  // 사이드바 전체를 다시 그릴 필요 없이 카드 그리드만 갱신한다.
+  function renderGrid(){
     const filtered = sortedItems(items.filter(matchesFilters));
     $('countRow').textContent = `${filtered.length}개 / 전체 ${items.length}개`;
 
@@ -958,6 +926,18 @@
     grid.querySelectorAll('[data-preview]').forEach(el => el.addEventListener('click', () => openPreview(el.dataset.preview)));
   }
 
+  // 항목 추가/수정/삭제, 폴더·카테고리·태그·파트 변경처럼 목록 구성 자체가
+  // 바뀔 수 있는 경우에만 사이드바까지 통째로 다시 그린다.
+  function render(){
+    renderPartTabs();
+    folderTaxonomy.renderBar();
+    categoryTaxonomy.renderBar();
+    renderTagBar();
+    renderGrid();
+  }
+
+  const debouncedRenderGrid = debounce(renderGrid, 150);
+
   function cardHtml(item){
     const dateStr = new Date(item.addedAt).toLocaleDateString('ko-KR', {year:'numeric', month:'2-digit', day:'2-digit'});
     const thumbs = item.thumbs || (item.url ? [item.url] : []);
@@ -970,7 +950,7 @@
       const src = thumbs[0] || '';
       thumbHtml = src ? `<img src="${src}" loading="lazy" alt="">` : '';
     }
-    const link = item.type === 'youtube' ? item.url : (item.url || '#');
+    const link = safeHref(item.url);
     return `
     <div class="card">
       <div class="${thumbClass}" data-preview="${item.id}" title="크게 보기">
@@ -980,8 +960,8 @@
       <div class="card-body">
         <div class="card-title"><a href="${escapeHtml(link)}" target="_blank" rel="noopener">${escapeHtml(item.title || '(제목 없음)')}</a></div>
         ${item.part ? `<div class="card-part">${partLabel(item.part)}</div>` : ''}
-        ${item.folderId ? `<div class="card-folder">📁 ${escapeHtml(getFolderName(item.folderId) || '')}</div>` : ''}
-        ${item.categoryId ? `<div class="card-cat">🏷 ${escapeHtml(getCategoryName(item.categoryId) || '')}</div>` : ''}
+        ${item.folderId ? `<div class="card-folder">📁 ${escapeHtml(folderTaxonomy.getName(item.folderId) || '')}</div>` : ''}
+        ${item.categoryId ? `<div class="card-cat">🏷 ${escapeHtml(categoryTaxonomy.getName(item.categoryId) || '')}</div>` : ''}
         ${item.tags.length ? `<div class="card-tags">${item.tags.map(t=>`<span class="tag">#${escapeHtml(t)}</span>`).join('')}</div>` : ''}
         ${item.memo ? `<div class="card-memo">${escapeHtml(item.memo)}</div>` : ''}
         <div class="card-foot">
@@ -1014,15 +994,14 @@
 
     const metaParts = [];
     if(item.part) metaParts.push(`<span>${escapeHtml(partLabel(item.part))}</span>`);
-    if(item.folderId) metaParts.push(`<span>📁 ${escapeHtml(getFolderName(item.folderId) || '')}</span>`);
-    if(item.categoryId) metaParts.push(`<span>🏷 ${escapeHtml(getCategoryName(item.categoryId) || '')}</span>`);
+    if(item.folderId) metaParts.push(`<span>📁 ${escapeHtml(folderTaxonomy.getName(item.folderId) || '')}</span>`);
+    if(item.categoryId) metaParts.push(`<span>🏷 ${escapeHtml(categoryTaxonomy.getName(item.categoryId) || '')}</span>`);
     (item.tags || []).forEach(t => metaParts.push(`<span>#${escapeHtml(t)}</span>`));
     $('previewMeta').innerHTML = metaParts.join('');
 
     $('previewMemo').textContent = item.memo || '';
 
-    const link = item.type === 'youtube' ? item.url : (item.url || '#');
-    $('previewOpenLink').href = link;
+    $('previewOpenLink').href = safeHref(item.url);
 
     previewOverlay.classList.add('open');
   }
@@ -1071,8 +1050,8 @@
 
   function openAdd(){
     resetForm();
-    renderFolderSelect();
-    renderCategorySelectModal();
+    folderTaxonomy.renderSelect('folderSelect');
+    categoryTaxonomy.renderSelect('categorySelectModal');
     if(activeFolder !== 'ALL' && activeFolder !== 'NONE'){ $('folderSelect').value = activeFolder; }
     if(activeCategory !== 'ALL' && activeCategory !== 'NONE'){ $('categorySelectModal').value = activeCategory; }
     overlay.classList.add('open');
@@ -1081,11 +1060,11 @@
   // 드래그해서 놓은 이미지로 "레퍼런스 추가" 모달을 미리 채워서 연다 (제목/폴더/카테고리는 직접 입력)
   async function openAddWithImage(file){
     resetForm();
-    renderFolderSelect();
-    renderCategorySelectModal();
+    folderTaxonomy.renderSelect('folderSelect');
+    categoryTaxonomy.renderSelect('categorySelectModal');
     if(activeFolder !== 'ALL' && activeFolder !== 'NONE'){ $('folderSelect').value = activeFolder; }
     if(activeCategory !== 'ALL' && activeCategory !== 'NONE'){ $('categorySelectModal').value = activeCategory; }
-    uploadedDataUrl = await readFileAsDataUrl(file);
+    uploadedDataUrl = await processUploadedFile(file);
     $('fileNameLabel').textContent = file.name;
     setUploadPreview(uploadedDataUrl);
     $('titleInput').value = stripExt(file.name);
@@ -1109,8 +1088,8 @@
     const item = items.find(i => i.id === id);
     if(!item) return;
     resetForm();
-    renderFolderSelect();
-    renderCategorySelectModal();
+    folderTaxonomy.renderSelect('folderSelect');
+    categoryTaxonomy.renderSelect('categorySelectModal');
     $('folderSelect').value = item.folderId || '';
     $('categorySelectModal').value = item.categoryId || '';
     editingId = id;
@@ -1478,15 +1457,15 @@
   $('btnSave').addEventListener('click', saveItem);
   overlay.addEventListener('click', (e) => { if(e.target === overlay) closeModal(); });
 
-  $('btnFolderCancel').addEventListener('click', closeFolderModal);
-  $('btnFolderSave').addEventListener('click', saveFolder);
-  folderOverlay.addEventListener('click', (e) => { if(e.target === folderOverlay) closeFolderModal(); });
-  $('folderNameInput').addEventListener('keydown', (e) => { if(e.key === 'Enter') saveFolder(); });
+  $('btnFolderCancel').addEventListener('click', folderTaxonomy.closeModal);
+  $('btnFolderSave').addEventListener('click', folderTaxonomy.save);
+  folderOverlay.addEventListener('click', (e) => { if(e.target === folderOverlay) folderTaxonomy.closeModal(); });
+  $('folderNameInput').addEventListener('keydown', (e) => { if(e.key === 'Enter') folderTaxonomy.save(); });
 
-  $('btnCategoryCancel').addEventListener('click', closeCategoryModal);
-  $('btnCategorySave').addEventListener('click', saveCategory);
-  categoryOverlay.addEventListener('click', (e) => { if(e.target === categoryOverlay) closeCategoryModal(); });
-  $('categoryNameInput').addEventListener('keydown', (e) => { if(e.key === 'Enter') saveCategory(); });
+  $('btnCategoryCancel').addEventListener('click', categoryTaxonomy.closeModal);
+  $('btnCategorySave').addEventListener('click', categoryTaxonomy.save);
+  categoryOverlay.addEventListener('click', (e) => { if(e.target === categoryOverlay) categoryTaxonomy.closeModal(); });
+  $('categoryNameInput').addEventListener('keydown', (e) => { if(e.key === 'Enter') categoryTaxonomy.save(); });
 
   $('btnPreviewClose').addEventListener('click', closePreview);
   previewOverlay.addEventListener('click', (e) => { if(e.target === previewOverlay) closePreview(); });
@@ -1501,7 +1480,7 @@
   $('fileUploadInput').addEventListener('change', async (e) => {
     const file = e.target.files[0];
     if(!file) return;
-    uploadedDataUrl = await readFileAsDataUrl(file);
+    uploadedDataUrl = await processUploadedFile(file);
     $('fileNameLabel').textContent = file.name;
     setUploadPreview(uploadedDataUrl);
     $('imageUrlInput').value = '';
@@ -1523,7 +1502,7 @@
     if(!isFileDrag(e)) return;
     const file = [...e.dataTransfer.files].find(f => f.type.startsWith('image/'));
     if(!file) return;
-    uploadedDataUrl = await readFileAsDataUrl(file);
+    uploadedDataUrl = await processUploadedFile(file);
     $('fileNameLabel').textContent = file.name;
     setUploadPreview(uploadedDataUrl);
     $('imageUrlInput').value = '';
@@ -1583,8 +1562,8 @@
     applyTagSuggestion(item.dataset.tagSuggest);
   });
 
-  $('searchInput').addEventListener('input', render);
-  $('sortSelect').addEventListener('change', render);
+  $('searchInput').addEventListener('input', debouncedRenderGrid);
+  $('sortSelect').addEventListener('change', renderGrid);
 
   $('btnExport').addEventListener('click', exportData);
   $('btnConnectNew').addEventListener('click', connectNewFile);
@@ -1598,8 +1577,8 @@
 
   document.addEventListener('keydown', (e) => {
     if(e.key === 'Escape' && overlay.classList.contains('open')) closeModal();
-    if(e.key === 'Escape' && folderOverlay.classList.contains('open')) closeFolderModal();
-    if(e.key === 'Escape' && categoryOverlay.classList.contains('open')) closeCategoryModal();
+    if(e.key === 'Escape' && folderOverlay.classList.contains('open')) folderTaxonomy.closeModal();
+    if(e.key === 'Escape' && categoryOverlay.classList.contains('open')) categoryTaxonomy.closeModal();
     if(e.key === 'Escape' && previewOverlay.classList.contains('open')) closePreview();
   });
 
