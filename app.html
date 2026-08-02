@@ -120,6 +120,13 @@
   .chip.active{ background:var(--accent); border-color:var(--accent); color:var(--accent-text); }
   .chip:hover:not(.active){ border-color:var(--accent); color:var(--text); }
 
+  .bulk-bar{
+    background:var(--accent-soft); border:1px solid var(--accent); border-radius:12px; padding:10px 14px;
+    margin-bottom:16px; display:flex; align-items:center; gap:10px; flex-wrap:wrap; font-size:13px; font-weight:700; color:var(--text);
+  }
+  .bulk-bar select{ font-size:13px; padding:7px 10px; }
+  .bulk-bar .spacer{ flex:1; }
+
   .sidebar{
     flex:0 0 176px; display:flex; flex-direction:column; gap:4px;
     position:sticky; top:78px;
@@ -212,6 +219,12 @@
     position:absolute; top:8px; left:8px; background:rgba(255,255,255,.92); color:#2a2824;
     font-size:10.5px; padding:3px 8px; border-radius:99px; font-weight:700;
   }
+  .bulk-check{
+    position:absolute; top:8px; right:8px; z-index:2; width:24px; height:24px; border-radius:6px;
+    background:rgba(255,255,255,.92); display:flex; align-items:center; justify-content:center;
+    box-shadow:var(--shadow); cursor:pointer;
+  }
+  .bulk-check input{ width:16px; height:16px; cursor:pointer; margin:0; }
   .card-body{ padding:13px 14px 14px; display:flex; flex-direction:column; gap:7px; }
   .card-title{ font-size:14.5px; font-weight:700; line-height:1.35; }
   .card-title a{ color:var(--text); text-decoration:none; }
@@ -229,6 +242,8 @@
   .card-foot button{ background:none; border:none; padding:0; font-size:11px; font-weight:700; color:var(--text-dim); }
   .card-foot button:hover{ color:var(--accent); }
   .card-foot button.del:hover{ color:var(--danger); }
+  .card-foot button.pin{ font-size:13px; }
+  .card-foot button.pin.active{ color:#d9a441; }
 
   .empty{
     text-align:center; padding:80px 20px; color:var(--text-dim);
@@ -324,6 +339,7 @@
     </div>
     <div class="header-actions">
       <button class="btn-icon" id="btnTheme" title="다크모드 전환">🌙</button>
+      <button class="btn-ghost" id="btnCapture">🔖 가져오기</button>
       <button class="btn-ghost" id="btnExport">백업 내보내기</button>
       <button class="btn-primary" id="btnAdd">+ 레퍼런스 추가</button>
     </div>
@@ -361,6 +377,17 @@
       <option value="old">오래된순</option>
       <option value="title">이름순</option>
     </select>
+    <button type="button" class="chip" id="favOnlyToggle">⭐ 즐겨찾기</button>
+    <button type="button" class="btn-ghost" id="btnBulkToggle">☑ 선택</button>
+  </div>
+  <div class="bulk-bar" id="bulkBar" style="display:none;">
+    <span id="bulkCount">0개 선택됨</span>
+    <button type="button" class="btn-ghost" id="btnBulkSelectAll">전체 선택/해제</button>
+    <select id="bulkFolderSelect"></select>
+    <button type="button" class="btn-ghost" id="btnBulkAddTag">태그 추가</button>
+    <span class="spacer"></span>
+    <button type="button" class="btn-danger-ghost" id="btnBulkDelete">삭제</button>
+    <button type="button" class="btn-ghost" id="btnBulkCancel">선택 종료</button>
   </div>
   <div class="tagbar" id="tagBar"></div>
   <div class="count-row" id="countRow"></div>
@@ -499,6 +526,22 @@
   </div>
 </div>
 
+<div class="overlay" id="captureOverlay">
+  <div class="modal">
+    <h2>웹에서 바로 담아오기</h2>
+    <div class="field-hint" style="margin-bottom:14px; font-size:12.5px; line-height:1.6;">
+      아래 버튼을 브라우저 북마크바로 드래그해서 등록해두세요. 이후 핀터레스트, 인스타그램 같은 곳에서 레퍼런스를 보다가 이 북마크를 누르면, 지금 보고 있는 가장 큰 이미지를 찾아서 이 앱의 "레퍼런스 추가" 화면으로 바로 가져와요.
+    </div>
+    <div style="text-align:center; margin:18px 0;">
+      <a href="#" id="bookmarkletLink" class="btn-primary" style="display:inline-block; text-decoration:none;">📌 레퍼런스 담기</a>
+    </div>
+    <div class="field-hint">드래그가 잘 안 되면 이 버튼을 우클릭 → 링크 복사 후, 새 북마크를 만들 때 주소란에 붙여넣어도 돼요. (자동 저장을 연결해둔 브라우저에서 사용해야 같은 파일에 저장돼요.)</div>
+    <div class="modal-actions">
+      <button class="btn-ghost" id="btnCaptureClose">닫기</button>
+    </div>
+  </div>
+</div>
+
 <div class="dropzone-overlay" id="dropzoneOverlay"><div class="msg">🖼 여기에 놓아서 레퍼런스로 추가</div></div>
 
 <script>
@@ -519,6 +562,9 @@
   let sidebarVisible = true;
   let fileHandle = null;
   let pendingHandle = null;
+  let favoritesOnly = false;
+  let bulkMode = false;
+  let selectedIds = new Set();
   const supportsFS = 'showSaveFilePicker' in window && 'showOpenFilePicker' in window;
 
   const $ = (id) => document.getElementById(id);
@@ -527,6 +573,7 @@
   const folderOverlay = $('folderOverlay');
   const categoryOverlay = $('categoryOverlay');
   const previewOverlay = $('previewOverlay');
+  const captureOverlay = $('captureOverlay');
   const emptyState = $('emptyState');
 
   function uid(prefix){ return (prefix||'r') + Date.now().toString(36) + Math.random().toString(36).slice(2,8); }
@@ -875,6 +922,7 @@
   }
 
   function matchesFilters(item){
+    if(favoritesOnly && !item.pinned) return false;
     const q = $('searchInput').value.trim().toLowerCase();
     if(q){
       const hay = [item.title, item.memo, categoryTaxonomy.getName(item.categoryId), ...item.tags].join(' ').toLowerCase();
@@ -891,13 +939,21 @@
     return true;
   }
 
-  function sortedItems(list){
-    const mode = $('sortSelect').value;
+  function sortByMode(list, mode){
     const copy = [...list];
     if(mode === 'new') copy.sort((a,b) => b.addedAt.localeCompare(a.addedAt));
     else if(mode === 'old') copy.sort((a,b) => a.addedAt.localeCompare(b.addedAt));
     else if(mode === 'title') copy.sort((a,b) => a.title.localeCompare(b.title, 'ko'));
     return copy;
+  }
+
+  // 즐겨찾기(핀 고정)한 항목은 어떤 정렬을 고르든 항상 맨 위에 오도록,
+  // 핀 그룹과 일반 그룹을 각각 정렬한 뒤 이어붙인다.
+  function sortedItems(list){
+    const mode = $('sortSelect').value;
+    const pinned = list.filter(i => i.pinned);
+    const rest = list.filter(i => !i.pinned);
+    return [...sortByMode(pinned, mode), ...sortByMode(rest, mode)];
   }
 
   function debounce(fn, delay){
@@ -924,6 +980,16 @@
     grid.querySelectorAll('[data-edit]').forEach(btn => btn.addEventListener('click', () => openEdit(btn.dataset.edit)));
     grid.querySelectorAll('[data-del]').forEach(btn => btn.addEventListener('click', () => removeItem(btn.dataset.del)));
     grid.querySelectorAll('[data-preview]').forEach(el => el.addEventListener('click', () => openPreview(el.dataset.preview)));
+    grid.querySelectorAll('[data-pin]').forEach(btn => btn.addEventListener('click', (e) => { e.stopPropagation(); togglePin(btn.dataset.pin); }));
+    if(bulkMode){
+      grid.querySelectorAll('.bulk-check').forEach(label => label.addEventListener('click', (e) => e.stopPropagation()));
+      grid.querySelectorAll('[data-select]').forEach(cb => {
+        cb.addEventListener('change', () => {
+          cb.checked ? selectedIds.add(cb.dataset.select) : selectedIds.delete(cb.dataset.select);
+          updateBulkBar();
+        });
+      });
+    }
   }
 
   // 항목 추가/수정/삭제, 폴더·카테고리·태그·파트 변경처럼 목록 구성 자체가
@@ -951,10 +1017,14 @@
       thumbHtml = src ? `<img src="${src}" loading="lazy" alt="">` : '';
     }
     const link = safeHref(item.url);
+    const checkHtml = bulkMode
+      ? `<label class="bulk-check"><input type="checkbox" data-select="${item.id}" ${selectedIds.has(item.id)?'checked':''}></label>`
+      : '';
     return `
     <div class="card">
       <div class="${thumbClass}" data-preview="${item.id}" title="크게 보기">
         <span class="type-badge">${item.type === 'youtube' ? '유튜브' : '이미지'}</span>
+        ${checkHtml}
         ${thumbHtml}
       </div>
       <div class="card-body">
@@ -967,6 +1037,7 @@
         <div class="card-foot">
           <span>${dateStr}</span>
           <span class="actions">
+            <button class="pin ${item.pinned?'active':''}" data-pin="${item.id}" title="${item.pinned ? '즐겨찾기 해제' : '즐겨찾기'}">${item.pinned ? '⭐' : '☆'}</button>
             <button data-edit="${item.id}">수정</button>
             <button class="del" data-del="${item.id}">삭제</button>
           </span>
@@ -1123,6 +1194,34 @@
     if(!confirm('이 레퍼런스를 삭제할까요?')) return;
     items = items.filter(i => i.id !== id);
     afterDataChange();
+  }
+
+  function togglePin(id){
+    const item = items.find(i => i.id === id);
+    if(!item) return;
+    item.pinned = !item.pinned;
+    afterDataChange();
+  }
+
+  // ---------- bulk select & actions ----------
+  function renderBulkFolderSelect(){
+    const sel = $('bulkFolderSelect');
+    sel.innerHTML = '<option value="">폴더로 이동...</option><option value="__none__">미분류로 이동</option>' +
+      folders.map(f => `<option value="${f.id}">${escapeHtml(f.name)}</option>`).join('');
+  }
+
+  function updateBulkBar(){
+    $('bulkCount').textContent = `${selectedIds.size}개 선택됨`;
+  }
+
+  function setBulkMode(on){
+    bulkMode = on;
+    selectedIds.clear();
+    $('bulkBar').style.display = on ? 'flex' : 'none';
+    $('btnBulkToggle').textContent = on ? '✕ 선택 종료' : '☑ 선택';
+    if(on) renderBulkFolderSelect();
+    updateBulkBar();
+    renderGrid();
   }
 
   function showErr(msg){
@@ -1451,6 +1550,53 @@
     }
   }
 
+  // ---------- web capture (bookmarklet) ----------
+  // GitHub Pages 주소로 고정해서, 어떻게 앱을 열었든(로컬 파일 포함) 북마클릿은
+  // 항상 같은 origin으로 열리게 한다. 이래야 자동 저장 파일 핸들(IndexedDB)이 공유돼서
+  // 새로 뜨는 팝업에서도 기존 라이브러리에 이어서 저장할 수 있다.
+  const CAPTURE_BASE_URL = 'https://luseuss.github.io/reference-archive/app.html';
+
+  function bookmarkletFn(){
+    function biggestImage(){
+      var imgs = Array.prototype.slice.call(document.images).filter(function(i){ return i.naturalWidth > 100 && i.naturalHeight > 100; });
+      if(!imgs.length) return null;
+      imgs.sort(function(a,b){ return (b.naturalWidth*b.naturalHeight) - (a.naturalWidth*a.naturalHeight); });
+      return imgs[0];
+    }
+    var img = biggestImage();
+    var imageUrl = img ? img.src : '';
+    if(!imageUrl){
+      var og = document.querySelector('meta[property="og:image"]');
+      if(og) imageUrl = og.content;
+    }
+    if(!imageUrl && /\.(jpe?g|png|gif|webp|avif)(\?.*)?$/i.test(location.href)) imageUrl = location.href;
+    if(!imageUrl){ alert('이미지를 찾지 못했어요.'); return; }
+    var params = new URLSearchParams({ add: '1', url: imageUrl, title: document.title || '', source: location.href });
+    window.open('__CAPTURE_BASE_URL__?' + params.toString(), '_blank', 'noopener,width=520,height=820');
+  }
+
+  function buildBookmarklet(){
+    const src = bookmarkletFn.toString().replace('__CAPTURE_BASE_URL__', CAPTURE_BASE_URL);
+    return 'javascript:' + encodeURIComponent('(' + src + ')();');
+  }
+
+  // 북마클릿이 이미지 URL을 담아 add=1로 다시 열었을 때, 그 정보로
+  // "레퍼런스 추가" 모달을 미리 채워서 연다.
+  function tryPrefillFromUrlParams(){
+    const params = new URLSearchParams(location.search);
+    if(params.get('add') !== '1') return;
+    const imageUrl = params.get('url') || '';
+    const title = params.get('title') || '';
+    const source = params.get('source') || '';
+    history.replaceState(null, '', location.pathname);
+    if(!imageUrl) return;
+    openAdd();
+    setType('image');
+    $('imageUrlInput').value = imageUrl;
+    $('titleInput').value = title || '';
+    if(source) $('memoInput').value = `출처: ${source}`;
+  }
+
   // ---------- events ----------
   $('btnAdd').addEventListener('click', openAdd);
   $('btnCancel').addEventListener('click', closeModal);
@@ -1565,6 +1711,60 @@
   $('searchInput').addEventListener('input', debouncedRenderGrid);
   $('sortSelect').addEventListener('change', renderGrid);
 
+  $('favOnlyToggle').addEventListener('click', () => {
+    favoritesOnly = !favoritesOnly;
+    $('favOnlyToggle').classList.toggle('active', favoritesOnly);
+    renderGrid();
+  });
+
+  $('btnBulkToggle').addEventListener('click', () => setBulkMode(!bulkMode));
+  $('btnBulkCancel').addEventListener('click', () => setBulkMode(false));
+  $('btnBulkSelectAll').addEventListener('click', () => {
+    const filtered = sortedItems(items.filter(matchesFilters));
+    const allSelected = filtered.length > 0 && filtered.every(i => selectedIds.has(i.id));
+    filtered.forEach(i => allSelected ? selectedIds.delete(i.id) : selectedIds.add(i.id));
+    updateBulkBar();
+    renderGrid();
+  });
+  $('bulkFolderSelect').addEventListener('change', (e) => {
+    const val = e.target.value;
+    if(!val || selectedIds.size === 0){ e.target.value = ''; return; }
+    const folderId = val === '__none__' ? null : val;
+    items.forEach(i => { if(selectedIds.has(i.id)) i.folderId = folderId; });
+    e.target.value = '';
+    afterDataChange();
+  });
+  $('btnBulkAddTag').addEventListener('click', () => {
+    if(selectedIds.size === 0) return;
+    const input = prompt('선택한 항목에 추가할 태그를 입력하세요 (쉼표로 구분)');
+    if(!input) return;
+    const newTags = input.split(',').map(t => t.trim()).filter(Boolean);
+    if(!newTags.length) return;
+    items.forEach(i => {
+      if(!selectedIds.has(i.id)) return;
+      const set = new Set(i.tags);
+      newTags.forEach(t => set.add(t));
+      i.tags = [...set];
+    });
+    afterDataChange();
+  });
+  $('btnBulkDelete').addEventListener('click', () => {
+    if(selectedIds.size === 0) return;
+    if(!confirm(`선택한 ${selectedIds.size}개 레퍼런스를 삭제할까요?`)) return;
+    items = items.filter(i => !selectedIds.has(i.id));
+    selectedIds.clear();
+    afterDataChange();
+    updateBulkBar();
+  });
+
+  $('btnCapture').addEventListener('click', () => {
+    $('bookmarkletLink').href = buildBookmarklet();
+    captureOverlay.classList.add('open');
+  });
+  $('bookmarkletLink').addEventListener('click', (e) => e.preventDefault());
+  $('btnCaptureClose').addEventListener('click', () => captureOverlay.classList.remove('open'));
+  captureOverlay.addEventListener('click', (e) => { if(e.target === captureOverlay) captureOverlay.classList.remove('open'); });
+
   $('btnExport').addEventListener('click', exportData);
   $('btnConnectNew').addEventListener('click', connectNewFile);
   $('btnOpenFile').addEventListener('click', openFile);
@@ -1580,13 +1780,23 @@
     if(e.key === 'Escape' && folderOverlay.classList.contains('open')) folderTaxonomy.closeModal();
     if(e.key === 'Escape' && categoryOverlay.classList.contains('open')) categoryTaxonomy.closeModal();
     if(e.key === 'Escape' && previewOverlay.classList.contains('open')) closePreview();
+    if(e.key === 'Escape' && captureOverlay.classList.contains('open')) captureOverlay.classList.remove('open');
   });
 
   initTheme();
   applySidebarVisibility();
   updateStatus(null);
   render();
-  restoreFileHandle();
+  tryPrefillFromUrlParams();
+  // 자동 저장 파일 재연결(IndexedDB)은 느리거나(드물게 file:// 환경에서) 멈출 수 있어서,
+  // 캡처 프리필을 여기에 의존시키지 않는다. 대신 재연결이 끝난 뒤 캡처 모달이 아직
+  // 열려 있으면(=아직 저장 전) 그때 불러온 폴더/카테고리 선택지만 반영해준다.
+  restoreFileHandle().then(() => {
+    if(overlay.classList.contains('open')){
+      folderTaxonomy.renderSelect('folderSelect');
+      categoryTaxonomy.renderSelect('categorySelectModal');
+    }
+  });
 })();
 </script>
 <script>
