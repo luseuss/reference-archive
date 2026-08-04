@@ -273,6 +273,36 @@
   .field textarea{ resize:vertical; min-height:56px; }
   .field-hint{ font-size:11px; color:var(--text-dim); margin-top:4px; }
   .project-select{ display:flex; gap:6px; flex-wrap:wrap; }
+
+  /* mood board (scene) */
+  .board-modal{ max-width:96vw; width:96vw; height:90vh; padding:0; display:flex; flex-direction:column; }
+  .board-header{ display:flex; align-items:center; justify-content:space-between; padding:14px 18px; border-bottom:1px solid var(--border); flex:0 0 auto; }
+  .board-header h2{ margin:0; font-size:16px; }
+  .board-header-actions{ position:relative; display:flex; gap:8px; align-items:center; }
+  .board-canvas-wrap{ flex:1; overflow:auto; position:relative; background:var(--bg); }
+  .board-canvas{ position:relative; width:2400px; height:1600px; }
+  .board-card{
+    position:absolute; border-radius:8px; overflow:hidden; box-shadow:var(--shadow);
+    border:1px solid var(--border); background:var(--surface); cursor:move; user-select:none;
+  }
+  .board-card img{ width:100%; height:100%; object-fit:cover; display:block; pointer-events:none; }
+  .board-card .board-remove{
+    position:absolute; top:4px; right:4px; width:20px; height:20px; border-radius:50%; border:none;
+    background:rgba(0,0,0,.6); color:#fff; font-size:11px; cursor:pointer; padding:0; line-height:1;
+  }
+  .board-card .board-resize{
+    position:absolute; right:0; bottom:0; width:16px; height:16px; cursor:nwse-resize;
+    background:var(--accent); border-radius:5px 0 0 0; opacity:.75;
+  }
+  .board-picker{
+    position:absolute; top:calc(100% + 6px); right:36px; width:260px; max-height:70vh; overflow-y:auto;
+    background:var(--surface); border:1px solid var(--border); border-radius:12px; box-shadow:var(--shadow);
+    padding:8px; display:none; z-index:5;
+  }
+  .board-picker.open{ display:block; }
+  .board-picker-item{ display:flex; gap:8px; align-items:center; padding:6px; border-radius:8px; cursor:pointer; font-size:12.5px; }
+  .board-picker-item:hover{ background:var(--accent-soft); }
+  .board-picker-item img{ width:36px; height:36px; object-fit:cover; border-radius:6px; flex-shrink:0; background:var(--tag-bg); }
   .tag-input-wrap{ position:relative; }
   .tag-suggest{
     position:absolute; top:calc(100% + 4px); left:0; right:0; background:var(--surface);
@@ -371,6 +401,11 @@
 
   <div class="folder-section-label">프로젝트</div>
   <div class="folderbar" id="projectBar"></div>
+
+  <div id="sceneSectionWrap" style="display:none;">
+    <div class="folder-section-label">장면 (무드보드)</div>
+    <div class="folderbar" id="sceneBar"></div>
+  </div>
 
   <div class="filters">
     <div class="search-box">
@@ -535,6 +570,37 @@
   </div>
 </div>
 
+<div class="overlay" id="sceneOverlay">
+  <div class="modal">
+    <h2 id="sceneModalTitle">새 장면 만들기</h2>
+    <div class="field">
+      <label>장면 이름</label>
+      <input type="text" id="sceneNameInput" placeholder="예: 오프닝, 클라이맥스">
+    </div>
+    <div class="err" id="sceneFormErr"></div>
+    <div class="modal-actions">
+      <button class="btn-ghost" id="btnSceneCancel">취소</button>
+      <button class="btn-primary" id="btnSceneSave">저장</button>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="boardOverlay">
+  <div class="modal board-modal">
+    <div class="board-header">
+      <h2 id="boardTitle"></h2>
+      <div class="board-header-actions">
+        <button type="button" class="btn-ghost" id="btnBoardAdd">+ 레퍼런스 추가</button>
+        <div class="board-picker" id="boardPicker"></div>
+        <button type="button" class="btn-icon" id="btnBoardClose" title="닫기">✕</button>
+      </div>
+    </div>
+    <div class="board-canvas-wrap">
+      <div class="board-canvas" id="boardCanvas"></div>
+    </div>
+  </div>
+</div>
+
 <div class="overlay" id="previewOverlay">
   <div class="modal preview-modal">
     <div class="preview-header">
@@ -582,6 +648,10 @@
   let activeProjects = new Set();
   let editingProjectId = null;
   let selectedProjectIds = new Set();
+  let scenes = [];
+  let boardPlacements = [];
+  let editingSceneId = null;
+  let activeSceneId = null;
   let editingId = null;
   let currentType = 'image';
   let uploadedDataUrl = null;
@@ -604,6 +674,8 @@
   const folderOverlay = $('folderOverlay');
   const categoryOverlay = $('categoryOverlay');
   const projectOverlay = $('projectOverlay');
+  const sceneOverlay = $('sceneOverlay');
+  const boardOverlay = $('boardOverlay');
   const previewOverlay = $('previewOverlay');
   const captureOverlay = $('captureOverlay');
   const emptyState = $('emptyState');
@@ -945,10 +1017,14 @@
   function removeProject(id){
     const p = projects.find(x => x.id === id);
     if(!p) return;
-    if(!confirm(`"${p.name}" 프로젝트를 삭제할까요? 배정된 레퍼런스는 삭제되지 않고 이 프로젝트에서만 빠져요.`)) return;
+    if(!confirm(`"${p.name}" 프로젝트를 삭제할까요? 배정된 레퍼런스는 삭제되지 않고 이 프로젝트에서만 빠지고, 이 프로젝트의 장면(무드보드)도 함께 삭제돼요.`)) return;
     projects = projects.filter(x => x.id !== id);
     items.forEach(i => { if(i.projectIds) i.projectIds = i.projectIds.filter(pid => pid !== id); });
     activeProjects.delete(id);
+    const removedSceneIds = new Set(scenes.filter(s => s.projectId === id).map(s => s.id));
+    scenes = scenes.filter(s => s.projectId !== id);
+    boardPlacements = boardPlacements.filter(p => !removedSceneIds.has(p.sceneId));
+    if(activeSceneId && removedSceneIds.has(activeSceneId)) closeBoard();
     afterDataChange();
   }
 
@@ -969,6 +1045,253 @@
         btn.classList.toggle('active');
       });
     });
+  }
+
+  // ---------- scenes (mood boards within a project) ----------
+  // 장면은 폴더/프로젝트와 달리 "정확히 하나의 프로젝트에 속하는" 하위 개념이라
+  // scene.projectId로 소속을 표시한다. 프로젝트 칩을 하나만 골랐을 때만 그 프로젝트의
+  // 장면 목록이 나타나고, 장면을 누르면 자유 배치 무드보드가 열린다.
+  function renderSceneBar(){
+    const wrap = $('sceneSectionWrap');
+    if(activeProjects.size !== 1){
+      wrap.style.display = 'none';
+      return;
+    }
+    const projectId = [...activeProjects][0];
+    const list = scenes.filter(s => s.projectId === projectId);
+    wrap.style.display = '';
+    const bar = $('sceneBar');
+    let html = list.map(s => {
+      const cnt = boardPlacements.filter(p => p.sceneId === s.id).length;
+      return `<div class="folder-chip" data-scene-chip="${escapeHtml(s.id)}" title="더블클릭: 이름 변경">🎞 ${escapeHtml(s.name)} <span class="count">${cnt}</span><span class="del-x" data-scene-del="${escapeHtml(s.id)}" title="삭제">✕</span></div>`;
+    }).join('');
+    html += `<div class="folder-chip add" data-scene-add>+ 새 장면</div>`;
+    bar.innerHTML = html;
+
+    bar.querySelectorAll('[data-scene-chip]').forEach(chip => {
+      chip.addEventListener('click', (e) => {
+        if(e.target.closest('[data-scene-del]')) return;
+        openBoard(chip.dataset.sceneChip);
+      });
+      chip.addEventListener('dblclick', () => openSceneModal(chip.dataset.sceneChip, projectId));
+    });
+    bar.querySelectorAll('[data-scene-del]').forEach(x => {
+      x.addEventListener('click', (e) => { e.stopPropagation(); removeScene(x.dataset.sceneDel); });
+    });
+    const addChip = bar.querySelector('[data-scene-add]');
+    if(addChip) addChip.addEventListener('click', () => openSceneModal(null, projectId));
+  }
+
+  function openSceneModal(id, projectId){
+    editingSceneId = id || null;
+    const item = editingSceneId ? scenes.find(s => s.id === editingSceneId) : null;
+    $('sceneModalTitle').textContent = item ? '장면 이름 변경' : '새 장면 만들기';
+    $('sceneNameInput').value = item ? item.name : '';
+    $('sceneFormErr').style.display = 'none';
+    sceneOverlay.dataset.projectId = item ? item.projectId : projectId;
+    sceneOverlay.classList.add('open');
+    setTimeout(() => $('sceneNameInput').focus(), 0);
+  }
+
+  function closeSceneModal(){
+    sceneOverlay.classList.remove('open');
+    editingSceneId = null;
+  }
+
+  function showSceneErr(msg){
+    const e = $('sceneFormErr');
+    e.textContent = msg;
+    e.style.display = 'block';
+  }
+
+  function saveScene(){
+    const name = $('sceneNameInput').value.trim();
+    if(!name){ showSceneErr('장면 이름을 입력해주세요.'); return; }
+    const projectId = sceneOverlay.dataset.projectId;
+    const siblings = scenes.filter(s => s.projectId === projectId);
+    if(siblings.some(s => s.name === name && s.id !== editingSceneId)){
+      showSceneErr('이미 같은 이름의 장면이 있어요.');
+      return;
+    }
+    if(editingSceneId){
+      const s = scenes.find(s => s.id === editingSceneId);
+      s.name = name;
+    } else {
+      scenes.push({ id: uid('s'), name, projectId });
+    }
+    closeSceneModal();
+    afterDataChange();
+  }
+
+  // 장면을 지워도 배치됐던 레퍼런스는 삭제되지 않고, 그 장면의 보드 배치만 함께 사라진다.
+  function removeScene(id){
+    const s = scenes.find(x => x.id === id);
+    if(!s) return;
+    if(!confirm(`"${s.name}" 장면을 삭제할까요? 보드에서 빠질 뿐 레퍼런스 자체는 삭제되지 않아요.`)) return;
+    scenes = scenes.filter(x => x.id !== id);
+    boardPlacements = boardPlacements.filter(p => p.sceneId !== id);
+    if(activeSceneId === id) closeBoard();
+    afterDataChange();
+  }
+
+  // ---------- mood board canvas (free drag & resize, PureRef-style) ----------
+  function maxBoardZ(){
+    return boardPlacements.reduce((m, p) => Math.max(m, p.z || 0), 0);
+  }
+
+  function openBoard(sceneId){
+    const scene = scenes.find(s => s.id === sceneId);
+    if(!scene) return;
+    activeSceneId = sceneId;
+    $('boardTitle').textContent = `🎞 ${scene.name}`;
+    hideBoardPicker();
+    renderBoard();
+    boardOverlay.classList.add('open');
+  }
+
+  function closeBoard(){
+    boardOverlay.classList.remove('open');
+    activeSceneId = null;
+    hideBoardPicker();
+  }
+
+  function renderBoard(){
+    const canvas = $('boardCanvas');
+    const placements = boardPlacements.filter(p => p.sceneId === activeSceneId);
+    canvas.innerHTML = placements.map(p => {
+      const item = items.find(i => i.id === p.itemId);
+      if(!item) return '';
+      const src = (item.thumbs && item.thumbs[0]) || item.url || '';
+      return `<div class="board-card" data-board-card="${p.id}" style="left:${p.x}px; top:${p.y}px; width:${p.w}px; height:${p.h}px; z-index:${p.z};">
+        <img src="${escapeHtml(src)}" alt="" draggable="false">
+        <button type="button" class="board-remove" data-board-remove="${p.id}" title="보드에서 제거">✕</button>
+        <div class="board-resize" data-board-resize="${p.id}"></div>
+      </div>`;
+    }).join('');
+
+    canvas.querySelectorAll('[data-board-card]').forEach(card => {
+      card.addEventListener('mousedown', (e) => {
+        if(e.target.closest('[data-board-resize]') || e.target.closest('[data-board-remove]')) return;
+        startDragPlacement(e, card.dataset.boardCard);
+      });
+    });
+    canvas.querySelectorAll('[data-board-resize]').forEach(handle => {
+      handle.addEventListener('mousedown', (e) => {
+        e.stopPropagation();
+        startResizePlacement(e, handle.dataset.boardResize);
+      });
+    });
+    canvas.querySelectorAll('[data-board-remove]').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        boardPlacements = boardPlacements.filter(p => p.id !== btn.dataset.boardRemove);
+        renderBoard();
+        renderSceneBar();
+        afterDataChange();
+      });
+    });
+  }
+
+  let dragState = null;
+  function startDragPlacement(e, placementId){
+    e.preventDefault();
+    const p = boardPlacements.find(x => x.id === placementId);
+    if(!p) return;
+    p.z = maxBoardZ() + 1;
+    const card = $('boardCanvas').querySelector(`[data-board-card="${placementId}"]`);
+    if(card) card.style.zIndex = p.z;
+    dragState = { id: placementId, startX: e.clientX, startY: e.clientY, origX: p.x, origY: p.y };
+    document.addEventListener('mousemove', onDragMove);
+    document.addEventListener('mouseup', onDragEnd);
+  }
+  function onDragMove(e){
+    if(!dragState) return;
+    const p = boardPlacements.find(x => x.id === dragState.id);
+    if(!p) return;
+    p.x = Math.max(0, dragState.origX + (e.clientX - dragState.startX));
+    p.y = Math.max(0, dragState.origY + (e.clientY - dragState.startY));
+    const card = $('boardCanvas').querySelector(`[data-board-card="${dragState.id}"]`);
+    if(card){ card.style.left = p.x + 'px'; card.style.top = p.y + 'px'; }
+  }
+  function onDragEnd(){
+    document.removeEventListener('mousemove', onDragMove);
+    document.removeEventListener('mouseup', onDragEnd);
+    if(dragState){ dragState = null; afterDataChange(); }
+  }
+
+  let resizeState = null;
+  const MIN_BOARD_SIZE = 80;
+  function startResizePlacement(e, placementId){
+    e.preventDefault();
+    const p = boardPlacements.find(x => x.id === placementId);
+    if(!p) return;
+    p.z = maxBoardZ() + 1;
+    const card = $('boardCanvas').querySelector(`[data-board-card="${placementId}"]`);
+    if(card) card.style.zIndex = p.z;
+    resizeState = { id: placementId, startX: e.clientX, startY: e.clientY, origW: p.w, origH: p.h };
+    document.addEventListener('mousemove', onResizeMove);
+    document.addEventListener('mouseup', onResizeEnd);
+  }
+  function onResizeMove(e){
+    if(!resizeState) return;
+    const p = boardPlacements.find(x => x.id === resizeState.id);
+    if(!p) return;
+    p.w = Math.max(MIN_BOARD_SIZE, resizeState.origW + (e.clientX - resizeState.startX));
+    p.h = Math.max(MIN_BOARD_SIZE, resizeState.origH + (e.clientY - resizeState.startY));
+    const card = $('boardCanvas').querySelector(`[data-board-card="${resizeState.id}"]`);
+    if(card){ card.style.width = p.w + 'px'; card.style.height = p.h + 'px'; }
+  }
+  function onResizeEnd(){
+    document.removeEventListener('mousemove', onResizeMove);
+    document.removeEventListener('mouseup', onResizeEnd);
+    if(resizeState){ resizeState = null; afterDataChange(); }
+  }
+
+  // ---------- board reference picker ("+ 레퍼런스 추가") ----------
+  function toggleBoardPicker(){
+    const picker = $('boardPicker');
+    picker.classList.toggle('open');
+    if(picker.classList.contains('open')) renderBoardPicker();
+  }
+  function hideBoardPicker(){
+    $('boardPicker').classList.remove('open');
+  }
+  function renderBoardPicker(){
+    const picker = $('boardPicker');
+    const placedIds = new Set(boardPlacements.filter(p => p.sceneId === activeSceneId).map(p => p.itemId));
+    const available = items.filter(i => !placedIds.has(i.id));
+    if(available.length === 0){
+      picker.innerHTML = '<div class="field-hint">추가할 수 있는 레퍼런스가 없어요.</div>';
+      return;
+    }
+    picker.innerHTML = available.map(i => {
+      const src = (i.thumbs && i.thumbs[0]) || i.url || '';
+      return `<div class="board-picker-item" data-board-pick="${i.id}"><img src="${escapeHtml(src)}" alt=""><span>${escapeHtml(i.title || '(제목 없음)')}</span></div>`;
+    }).join('');
+    picker.querySelectorAll('[data-board-pick]').forEach(el => {
+      el.addEventListener('click', () => addToBoard(el.dataset.boardPick));
+    });
+  }
+
+  // 보드에 올리면 그 장면이 속한 프로젝트에도 자동으로 배정한다
+  // (장면은 프로젝트 하위 개념이므로 보드에 있으면 그 프로젝트에도 속하는 게 자연스럽다).
+  function addToBoard(itemId){
+    const scene = scenes.find(s => s.id === activeSceneId);
+    const item = items.find(i => i.id === itemId);
+    if(!scene || !item) return;
+    if(!(item.projectIds || []).includes(scene.projectId)){
+      item.projectIds = [...(item.projectIds || []), scene.projectId];
+    }
+    const count = boardPlacements.filter(p => p.sceneId === activeSceneId).length;
+    const cascade = (count % 8) * 24;
+    boardPlacements.push({
+      id: uid('bp'), sceneId: activeSceneId, itemId,
+      x: 24 + cascade, y: 24 + cascade, w: 220, h: 220, z: maxBoardZ() + 1
+    });
+    renderBoard();
+    renderBoardPicker();
+    renderSceneBar();
+    afterDataChange();
   }
 
   // ---------- rendering ----------
@@ -1139,6 +1462,7 @@
     folderTaxonomy.renderBar();
     categoryTaxonomy.renderBar();
     renderProjectBar();
+    renderSceneBar();
     renderTagBar();
     renderGrid();
   }
@@ -1343,6 +1667,7 @@
   function removeItem(id){
     if(!confirm('이 레퍼런스를 삭제할까요?')) return;
     items = items.filter(i => i.id !== id);
+    boardPlacements = boardPlacements.filter(p => p.itemId !== id);
     afterDataChange();
   }
 
@@ -1485,7 +1810,7 @@
 
   // ---------- manual export/import (backup) ----------
   function exportData(){
-    const blob = new Blob([JSON.stringify({folders, categories, projects, items}, null, 2)], {type:'application/json'});
+    const blob = new Blob([JSON.stringify({folders, categories, projects, scenes, boardPlacements, items}, null, 2)], {type:'application/json'});
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     const stamp = new Date().toISOString().slice(0,10);
@@ -1499,14 +1824,16 @@
   // resolved into categories by name.
   function parseAndValidate(text){
     const data = JSON.parse(text);
-    let rawItems, rawCategories, rawFolders, rawProjects;
+    let rawItems, rawCategories, rawFolders, rawProjects, rawScenes, rawPlacements;
     if(Array.isArray(data)){
-      rawItems = data; rawCategories = []; rawFolders = []; rawProjects = [];
+      rawItems = data; rawCategories = []; rawFolders = []; rawProjects = []; rawScenes = []; rawPlacements = [];
     } else if(data && typeof data === 'object'){
       rawItems = Array.isArray(data.items) ? data.items : [];
       rawCategories = Array.isArray(data.categories) ? data.categories : [];
       rawFolders = Array.isArray(data.folders) ? data.folders : [];
       rawProjects = Array.isArray(data.projects) ? data.projects : [];
+      rawScenes = Array.isArray(data.scenes) ? data.scenes : [];
+      rawPlacements = Array.isArray(data.boardPlacements) ? data.boardPlacements : [];
     } else {
       throw new Error('형식 오류');
     }
@@ -1517,6 +1844,8 @@
     const folderIds = new Set(validFolders.map(f => f.id));
     const validProjects = rawProjects.filter(p => p && p.id && p.name);
     const projectIdsSet = new Set(validProjects.map(p => p.id));
+    const validScenes = rawScenes.filter(s => s && s.id && s.name && s.projectId && projectIdsSet.has(s.projectId));
+    const sceneIdsSet = new Set(validScenes.map(s => s.id));
 
     const validItems = rawItems
       .filter(d => d && d.id && d.type && d.title !== undefined)
@@ -1533,12 +1862,23 @@
         return { ...rest, part: d.part || defaultPartForType(d.type), categoryId, folderId, projectIds };
       });
     const validCategories = [...catByName.values()];
-    return { items: validItems, categories: validCategories, folders: validFolders, projects: validProjects };
+    const itemIdsSet = new Set(validItems.map(i => i.id));
+    const validPlacements = rawPlacements
+      .filter(p => p && p.id && sceneIdsSet.has(p.sceneId) && itemIdsSet.has(p.itemId))
+      .map(p => ({
+        id: p.id, sceneId: p.sceneId, itemId: p.itemId,
+        x: Number(p.x) || 0, y: Number(p.y) || 0,
+        w: Number(p.w) || 220, h: Number(p.h) || 220, z: Number(p.z) || 0
+      }));
+    return {
+      items: validItems, categories: validCategories, folders: validFolders,
+      projects: validProjects, scenes: validScenes, boardPlacements: validPlacements
+    };
   }
 
   function mergeOrReplace(incoming){
     if(items.length > 0 || categories.length > 0 || folders.length > 0 || projects.length > 0){
-      const merge = confirm(`${incoming.items.length}개 항목(카테고리 ${incoming.categories.length}개, 폴더 ${incoming.folders.length}개, 프로젝트 ${incoming.projects.length}개 포함)을 불러왔어요.\n기존 데이터에 추가하려면 확인, 완전히 교체하려면 취소를 누르세요.`);
+      const merge = confirm(`${incoming.items.length}개 항목(카테고리 ${incoming.categories.length}개, 폴더 ${incoming.folders.length}개, 프로젝트 ${incoming.projects.length}개, 장면 ${incoming.scenes.length}개 포함)을 불러왔어요.\n기존 데이터에 추가하려면 확인, 완전히 교체하려면 취소를 누르세요.`);
       if(merge){
         const existingIds = new Set(items.map(i=>i.id));
         items = items.concat(incoming.items.filter(v=>!existingIds.has(v.id)));
@@ -1548,11 +1888,17 @@
         folders = folders.concat(incoming.folders.filter(f=>!existingFolderIds.has(f.id)));
         const existingProjectIds = new Set(projects.map(p=>p.id));
         projects = projects.concat(incoming.projects.filter(p=>!existingProjectIds.has(p.id)));
+        const existingSceneIds = new Set(scenes.map(s=>s.id));
+        scenes = scenes.concat(incoming.scenes.filter(s=>!existingSceneIds.has(s.id)));
+        const existingPlacementIds = new Set(boardPlacements.map(p=>p.id));
+        boardPlacements = boardPlacements.concat(incoming.boardPlacements.filter(p=>!existingPlacementIds.has(p.id)));
       } else {
         items = incoming.items;
         categories = incoming.categories;
         folders = incoming.folders;
         projects = incoming.projects;
+        scenes = incoming.scenes;
+        boardPlacements = incoming.boardPlacements;
         activeCategory = 'ALL';
         activeFolder = 'ALL';
         activeProjects = new Set();
@@ -1562,6 +1908,8 @@
       categories = incoming.categories;
       folders = incoming.folders;
       projects = incoming.projects;
+      scenes = incoming.scenes;
+      boardPlacements = incoming.boardPlacements;
     }
   }
 
@@ -1647,7 +1995,7 @@
     if(!fileHandle) return;
     try{
       const writable = await fileHandle.createWritable();
-      await writable.write(JSON.stringify({folders, categories, projects, items}, null, 2));
+      await writable.write(JSON.stringify({folders, categories, projects, scenes, boardPlacements, items}, null, 2));
       await writable.close();
     } catch(e){
       console.error('자동 저장 실패', e);
@@ -1715,6 +2063,8 @@
     categories = incoming.categories;
     folders = incoming.folders;
     projects = incoming.projects;
+    scenes = incoming.scenes;
+    boardPlacements = incoming.boardPlacements;
     fileHandle = handle;
     updateStatus(handle.name);
     render();
@@ -1834,6 +2184,19 @@
   $('btnProjectSave').addEventListener('click', saveProject);
   projectOverlay.addEventListener('click', (e) => { if(e.target === projectOverlay) closeProjectModal(); });
   $('projectNameInput').addEventListener('keydown', (e) => { if(e.key === 'Enter') saveProject(); });
+
+  $('btnSceneCancel').addEventListener('click', closeSceneModal);
+  $('btnSceneSave').addEventListener('click', saveScene);
+  sceneOverlay.addEventListener('click', (e) => { if(e.target === sceneOverlay) closeSceneModal(); });
+  $('sceneNameInput').addEventListener('keydown', (e) => { if(e.key === 'Enter') saveScene(); });
+
+  $('btnBoardClose').addEventListener('click', closeBoard);
+  boardOverlay.addEventListener('click', (e) => { if(e.target === boardOverlay) closeBoard(); });
+  $('btnBoardAdd').addEventListener('click', (e) => { e.stopPropagation(); toggleBoardPicker(); });
+  document.addEventListener('click', (e) => {
+    const picker = $('boardPicker');
+    if(picker.classList.contains('open') && !picker.contains(e.target) && e.target.id !== 'btnBoardAdd') hideBoardPicker();
+  });
 
   $('btnPreviewClose').addEventListener('click', closePreview);
   previewOverlay.addEventListener('click', (e) => { if(e.target === previewOverlay) closePreview(); });
@@ -1975,6 +2338,7 @@
     if(selectedIds.size === 0) return;
     if(!confirm(`선택한 ${selectedIds.size}개 레퍼런스를 삭제할까요?`)) return;
     items = items.filter(i => !selectedIds.has(i.id));
+    boardPlacements = boardPlacements.filter(p => !selectedIds.has(p.itemId));
     selectedIds.clear();
     afterDataChange();
     updateBulkBar();
@@ -2003,6 +2367,8 @@
     if(e.key === 'Escape' && folderOverlay.classList.contains('open')) folderTaxonomy.closeModal();
     if(e.key === 'Escape' && categoryOverlay.classList.contains('open')) categoryTaxonomy.closeModal();
     if(e.key === 'Escape' && projectOverlay.classList.contains('open')) closeProjectModal();
+    if(e.key === 'Escape' && sceneOverlay.classList.contains('open')) closeSceneModal();
+    if(e.key === 'Escape' && boardOverlay.classList.contains('open')) closeBoard();
     if(e.key === 'Escape' && previewOverlay.classList.contains('open')) closePreview();
     if(e.key === 'Escape' && captureOverlay.classList.contains('open')) captureOverlay.classList.remove('open');
   });
