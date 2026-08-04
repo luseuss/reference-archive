@@ -272,6 +272,7 @@
   }
   .field textarea{ resize:vertical; min-height:56px; }
   .field-hint{ font-size:11px; color:var(--text-dim); margin-top:4px; }
+  .project-select{ display:flex; gap:6px; flex-wrap:wrap; }
   .tag-input-wrap{ position:relative; }
   .tag-suggest{
     position:absolute; top:calc(100% + 4px); left:0; right:0; background:var(--surface);
@@ -368,6 +369,9 @@
   <div class="folder-section-label">카테고리</div>
   <div class="folderbar" id="categoryFolderBar"></div>
 
+  <div class="folder-section-label">프로젝트</div>
+  <div class="folderbar" id="projectBar"></div>
+
   <div class="filters">
     <div class="search-box">
       <input type="text" id="searchInput" placeholder="제목, 태그, 메모로 검색">
@@ -463,6 +467,11 @@
       <div class="field-hint">새 카테고리는 왼쪽 메뉴의 "카테고리 생성"으로 먼저 만들어주세요.</div>
     </div>
     <div class="field">
+      <label>프로젝트</label>
+      <div class="project-select" id="projectSelectModal"></div>
+      <div class="field-hint">여러 프로젝트에 동시에 배정할 수 있어요. 새 프로젝트는 아래 "프로젝트" 영역의 "+ 새 프로젝트"로 먼저 만들어주세요.</div>
+    </div>
+    <div class="field">
       <label>태그 (쉼표로 구분)</label>
       <div class="tag-input-wrap">
         <input type="text" id="tagsInput" placeholder="예: 미니멀, 타이포그래피, 인터랙션" autocomplete="off">
@@ -511,6 +520,21 @@
   </div>
 </div>
 
+<div class="overlay" id="projectOverlay">
+  <div class="modal">
+    <h2 id="projectModalTitle">새 프로젝트 만들기</h2>
+    <div class="field">
+      <label>프로젝트 이름</label>
+      <input type="text" id="projectNameInput" placeholder="예: 전통/애절함/간절함">
+    </div>
+    <div class="err" id="projectFormErr"></div>
+    <div class="modal-actions">
+      <button class="btn-ghost" id="btnProjectCancel">취소</button>
+      <button class="btn-primary" id="btnProjectSave">저장</button>
+    </div>
+  </div>
+</div>
+
 <div class="overlay" id="previewOverlay">
   <div class="modal preview-modal">
     <div class="preview-header">
@@ -554,6 +578,10 @@
   let categories = [];
   let activeCategory = 'ALL';
   let editingCategoryId = null;
+  let projects = [];
+  let activeProjects = new Set();
+  let editingProjectId = null;
+  let selectedProjectIds = new Set();
   let editingId = null;
   let currentType = 'image';
   let uploadedDataUrl = null;
@@ -575,6 +603,7 @@
   const overlay = $('overlay');
   const folderOverlay = $('folderOverlay');
   const categoryOverlay = $('categoryOverlay');
+  const projectOverlay = $('projectOverlay');
   const previewOverlay = $('previewOverlay');
   const captureOverlay = $('captureOverlay');
   const emptyState = $('emptyState');
@@ -839,6 +868,109 @@
     onActivate: () => { activePart = 'ALL'; }
   });
 
+  // ---------- projects ----------
+  // 폴더/카테고리와 달리 레퍼런스 하나가 여러 프로젝트에 동시에 속할 수 있어야 하므로
+  // (다대다 관계, item.projectIds 배열) makeTaxonomy의 "단일 선택" 구조를 그대로 쓰지 않고,
+  // 태그 필터(activeTags)처럼 다중 선택 + AND 조합 방식으로 별도 구현한다.
+  function projectCount(id){
+    return items.filter(i => (i.projectIds || []).includes(id)).length;
+  }
+
+  function renderProjectBar(){
+    const bar = $('projectBar');
+    if(!bar) return;
+    let html = projects.map(p => {
+      const active = activeProjects.has(p.id) ? 'active' : '';
+      return `<div class="folder-chip ${active}" data-project-chip="${escapeHtml(p.id)}" title="더블클릭: 이름 변경">🎯 ${escapeHtml(p.name)} <span class="count">${projectCount(p.id)}</span><span class="del-x" data-project-del="${escapeHtml(p.id)}" title="삭제">✕</span></div>`;
+    }).join('');
+    html += `<div class="folder-chip add" data-project-add>+ 새 프로젝트</div>`;
+    bar.innerHTML = html;
+
+    bar.querySelectorAll('[data-project-chip]').forEach(chip => {
+      chip.addEventListener('click', (e) => {
+        if(e.target.closest('[data-project-del]')) return;
+        const id = chip.dataset.projectChip;
+        activeProjects.has(id) ? activeProjects.delete(id) : activeProjects.add(id);
+        render();
+      });
+      chip.addEventListener('dblclick', () => openProjectModal(chip.dataset.projectChip));
+    });
+    bar.querySelectorAll('[data-project-del]').forEach(x => {
+      x.addEventListener('click', (e) => { e.stopPropagation(); removeProject(x.dataset.projectDel); });
+    });
+    const addChip = bar.querySelector('[data-project-add]');
+    if(addChip) addChip.addEventListener('click', () => openProjectModal());
+  }
+
+  function openProjectModal(id){
+    editingProjectId = id || null;
+    const item = editingProjectId ? projects.find(p => p.id === editingProjectId) : null;
+    $('projectModalTitle').textContent = item ? '프로젝트 이름 변경' : '새 프로젝트 만들기';
+    $('projectNameInput').value = item ? item.name : '';
+    $('projectFormErr').style.display = 'none';
+    projectOverlay.classList.add('open');
+    setTimeout(() => $('projectNameInput').focus(), 0);
+  }
+
+  function closeProjectModal(){
+    projectOverlay.classList.remove('open');
+    editingProjectId = null;
+  }
+
+  function showProjectErr(msg){
+    const e = $('projectFormErr');
+    e.textContent = msg;
+    e.style.display = 'block';
+  }
+
+  function saveProject(){
+    const name = $('projectNameInput').value.trim();
+    if(!name){ showProjectErr('프로젝트 이름을 입력해주세요.'); return; }
+    if(projects.some(p => p.name === name && p.id !== editingProjectId)){
+      showProjectErr('이미 같은 이름의 프로젝트가 있어요.');
+      return;
+    }
+    if(editingProjectId){
+      const p = projects.find(p => p.id === editingProjectId);
+      p.name = name;
+    } else {
+      projects.push({ id: uid('p'), name });
+    }
+    closeProjectModal();
+    afterDataChange();
+  }
+
+  // 프로젝트를 지워도 배정됐던 레퍼런스는 삭제되지 않고, projectIds에서 해당 프로젝트만 빠진다
+  // (폴더 삭제 시 "미분류"로 이동하는 것과 같은 원칙).
+  function removeProject(id){
+    const p = projects.find(x => x.id === id);
+    if(!p) return;
+    if(!confirm(`"${p.name}" 프로젝트를 삭제할까요? 배정된 레퍼런스는 삭제되지 않고 이 프로젝트에서만 빠져요.`)) return;
+    projects = projects.filter(x => x.id !== id);
+    items.forEach(i => { if(i.projectIds) i.projectIds = i.projectIds.filter(pid => pid !== id); });
+    activeProjects.delete(id);
+    afterDataChange();
+  }
+
+  function renderProjectSelectModal(){
+    const wrap = $('projectSelectModal');
+    if(!wrap) return;
+    if(projects.length === 0){
+      wrap.innerHTML = '<span class="field-hint">아직 만든 프로젝트가 없어요.</span>';
+      return;
+    }
+    wrap.innerHTML = projects.map(p =>
+      `<button type="button" class="chip ${selectedProjectIds.has(p.id)?'active':''}" data-project-select="${escapeHtml(p.id)}">${escapeHtml(p.name)}</button>`
+    ).join('');
+    wrap.querySelectorAll('[data-project-select]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const id = btn.dataset.projectSelect;
+        selectedProjectIds.has(id) ? selectedProjectIds.delete(id) : selectedProjectIds.add(id);
+        btn.classList.toggle('active');
+      });
+    });
+  }
+
   // ---------- rendering ----------
   function allTags(){
     return [...new Set(items.flatMap(i => i.tags))].sort();
@@ -934,6 +1066,10 @@
     if(activeTags.size > 0){
       for(const t of activeTags){ if(!item.tags.includes(t)) return false; }
     }
+    if(activeProjects.size > 0){
+      const projectIds = item.projectIds || [];
+      for(const pid of activeProjects){ if(!projectIds.includes(pid)) return false; }
+    }
     if(activeCategory === 'NONE' && item.categoryId) return false;
     if(activeCategory !== 'ALL' && activeCategory !== 'NONE' && item.categoryId !== activeCategory) return false;
     if(activeFolder === 'NONE' && item.folderId) return false;
@@ -1002,6 +1138,7 @@
     renderPartTabs();
     folderTaxonomy.renderBar();
     categoryTaxonomy.renderBar();
+    renderProjectBar();
     renderTagBar();
     renderGrid();
   }
@@ -1106,6 +1243,7 @@
     hideTagSuggestions();
     $('folderSelect').value = '';
     $('categorySelectModal').value = '';
+    selectedProjectIds = new Set();
     setType('image');
   }
 
@@ -1131,6 +1269,8 @@
     categoryTaxonomy.renderSelect('categorySelectModal');
     if(activeFolder !== 'ALL' && activeFolder !== 'NONE'){ $('folderSelect').value = activeFolder; }
     if(activeCategory !== 'ALL' && activeCategory !== 'NONE'){ $('categorySelectModal').value = activeCategory; }
+    if(activeProjects.size){ selectedProjectIds = new Set(activeProjects); }
+    renderProjectSelectModal();
     overlay.classList.add('open');
   }
 
@@ -1141,6 +1281,8 @@
     categoryTaxonomy.renderSelect('categorySelectModal');
     if(activeFolder !== 'ALL' && activeFolder !== 'NONE'){ $('folderSelect').value = activeFolder; }
     if(activeCategory !== 'ALL' && activeCategory !== 'NONE'){ $('categorySelectModal').value = activeCategory; }
+    if(activeProjects.size){ selectedProjectIds = new Set(activeProjects); }
+    renderProjectSelectModal();
     uploadedDataUrl = await processUploadedFile(file);
     $('fileNameLabel').textContent = file.name;
     setUploadPreview(uploadedDataUrl);
@@ -1169,6 +1311,8 @@
     categoryTaxonomy.renderSelect('categorySelectModal');
     $('folderSelect').value = item.folderId || '';
     $('categorySelectModal').value = item.categoryId || '';
+    selectedProjectIds = new Set(item.projectIds || []);
+    renderProjectSelectModal();
     editingId = id;
     $('modalTitle').textContent = '레퍼런스 수정';
     setType(item.type, false);
@@ -1317,14 +1461,15 @@
 
     const folderId = $('folderSelect').value || null;
     const categoryId = $('categorySelectModal').value || null;
+    const projectIds = [...selectedProjectIds];
     const part = currentPart;
 
     if(editingId){
       const item = items.find(i => i.id === editingId);
-      Object.assign(item, {type, url, thumbs, title, tags, memo, folderId, categoryId, part});
+      Object.assign(item, {type, url, thumbs, title, tags, memo, folderId, categoryId, projectIds, part});
     } else {
       items.push({
-        id: uid('r'), type, url, thumbs, title, tags, memo, folderId, categoryId, part,
+        id: uid('r'), type, url, thumbs, title, tags, memo, folderId, categoryId, projectIds, part,
         addedAt: new Date().toISOString()
       });
     }
@@ -1340,7 +1485,7 @@
 
   // ---------- manual export/import (backup) ----------
   function exportData(){
-    const blob = new Blob([JSON.stringify({folders, categories, items}, null, 2)], {type:'application/json'});
+    const blob = new Blob([JSON.stringify({folders, categories, projects, items}, null, 2)], {type:'application/json'});
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     const stamp = new Date().toISOString().slice(0,10);
@@ -1354,13 +1499,14 @@
   // resolved into categories by name.
   function parseAndValidate(text){
     const data = JSON.parse(text);
-    let rawItems, rawCategories, rawFolders;
+    let rawItems, rawCategories, rawFolders, rawProjects;
     if(Array.isArray(data)){
-      rawItems = data; rawCategories = []; rawFolders = [];
+      rawItems = data; rawCategories = []; rawFolders = []; rawProjects = [];
     } else if(data && typeof data === 'object'){
       rawItems = Array.isArray(data.items) ? data.items : [];
       rawCategories = Array.isArray(data.categories) ? data.categories : [];
       rawFolders = Array.isArray(data.folders) ? data.folders : [];
+      rawProjects = Array.isArray(data.projects) ? data.projects : [];
     } else {
       throw new Error('형식 오류');
     }
@@ -1369,6 +1515,8 @@
     rawCategories.filter(c => c && c.id && c.name).forEach(c => catByName.set(c.name, c));
     const validFolders = rawFolders.filter(f => f && f.id && f.name);
     const folderIds = new Set(validFolders.map(f => f.id));
+    const validProjects = rawProjects.filter(p => p && p.id && p.name);
+    const projectIdsSet = new Set(validProjects.map(p => p.id));
 
     const validItems = rawItems
       .filter(d => d && d.id && d.type && d.title !== undefined)
@@ -1380,16 +1528,17 @@
           categoryId = cat.id;
         }
         const folderId = (d.folderId && folderIds.has(d.folderId)) ? d.folderId : null;
+        const projectIds = Array.isArray(d.projectIds) ? d.projectIds.filter(pid => projectIdsSet.has(pid)) : [];
         const { category, ...rest } = d;
-        return { ...rest, part: d.part || defaultPartForType(d.type), categoryId, folderId };
+        return { ...rest, part: d.part || defaultPartForType(d.type), categoryId, folderId, projectIds };
       });
     const validCategories = [...catByName.values()];
-    return { items: validItems, categories: validCategories, folders: validFolders };
+    return { items: validItems, categories: validCategories, folders: validFolders, projects: validProjects };
   }
 
   function mergeOrReplace(incoming){
-    if(items.length > 0 || categories.length > 0 || folders.length > 0){
-      const merge = confirm(`${incoming.items.length}개 항목(카테고리 ${incoming.categories.length}개, 폴더 ${incoming.folders.length}개 포함)을 불러왔어요.\n기존 데이터에 추가하려면 확인, 완전히 교체하려면 취소를 누르세요.`);
+    if(items.length > 0 || categories.length > 0 || folders.length > 0 || projects.length > 0){
+      const merge = confirm(`${incoming.items.length}개 항목(카테고리 ${incoming.categories.length}개, 폴더 ${incoming.folders.length}개, 프로젝트 ${incoming.projects.length}개 포함)을 불러왔어요.\n기존 데이터에 추가하려면 확인, 완전히 교체하려면 취소를 누르세요.`);
       if(merge){
         const existingIds = new Set(items.map(i=>i.id));
         items = items.concat(incoming.items.filter(v=>!existingIds.has(v.id)));
@@ -1397,17 +1546,22 @@
         categories = categories.concat(incoming.categories.filter(c=>!existingCategoryIds.has(c.id)));
         const existingFolderIds = new Set(folders.map(f=>f.id));
         folders = folders.concat(incoming.folders.filter(f=>!existingFolderIds.has(f.id)));
+        const existingProjectIds = new Set(projects.map(p=>p.id));
+        projects = projects.concat(incoming.projects.filter(p=>!existingProjectIds.has(p.id)));
       } else {
         items = incoming.items;
         categories = incoming.categories;
         folders = incoming.folders;
+        projects = incoming.projects;
         activeCategory = 'ALL';
         activeFolder = 'ALL';
+        activeProjects = new Set();
       }
     } else {
       items = incoming.items;
       categories = incoming.categories;
       folders = incoming.folders;
+      projects = incoming.projects;
     }
   }
 
@@ -1493,7 +1647,7 @@
     if(!fileHandle) return;
     try{
       const writable = await fileHandle.createWritable();
-      await writable.write(JSON.stringify({folders, categories, items}, null, 2));
+      await writable.write(JSON.stringify({folders, categories, projects, items}, null, 2));
       await writable.close();
     } catch(e){
       console.error('자동 저장 실패', e);
@@ -1560,6 +1714,7 @@
     items = incoming.items;
     categories = incoming.categories;
     folders = incoming.folders;
+    projects = incoming.projects;
     fileHandle = handle;
     updateStatus(handle.name);
     render();
@@ -1674,6 +1829,11 @@
   $('btnCategorySave').addEventListener('click', categoryTaxonomy.save);
   categoryOverlay.addEventListener('click', (e) => { if(e.target === categoryOverlay) categoryTaxonomy.closeModal(); });
   $('categoryNameInput').addEventListener('keydown', (e) => { if(e.key === 'Enter') categoryTaxonomy.save(); });
+
+  $('btnProjectCancel').addEventListener('click', closeProjectModal);
+  $('btnProjectSave').addEventListener('click', saveProject);
+  projectOverlay.addEventListener('click', (e) => { if(e.target === projectOverlay) closeProjectModal(); });
+  $('projectNameInput').addEventListener('keydown', (e) => { if(e.key === 'Enter') saveProject(); });
 
   $('btnPreviewClose').addEventListener('click', closePreview);
   previewOverlay.addEventListener('click', (e) => { if(e.target === previewOverlay) closePreview(); });
@@ -1842,6 +2002,7 @@
     if(e.key === 'Escape' && overlay.classList.contains('open')) closeModal();
     if(e.key === 'Escape' && folderOverlay.classList.contains('open')) folderTaxonomy.closeModal();
     if(e.key === 'Escape' && categoryOverlay.classList.contains('open')) categoryTaxonomy.closeModal();
+    if(e.key === 'Escape' && projectOverlay.classList.contains('open')) closeProjectModal();
     if(e.key === 'Escape' && previewOverlay.classList.contains('open')) closePreview();
     if(e.key === 'Escape' && captureOverlay.classList.contains('open')) captureOverlay.classList.remove('open');
   });
