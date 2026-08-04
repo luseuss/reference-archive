@@ -279,8 +279,12 @@
   .board-header{ display:flex; align-items:center; justify-content:space-between; padding:14px 18px; border-bottom:1px solid var(--border); flex:0 0 auto; }
   .board-header h2{ margin:0; font-size:16px; }
   .board-header-actions{ position:relative; display:flex; gap:8px; align-items:center; }
+  .board-zoom-group{ display:flex; align-items:center; gap:4px; }
+  .board-zoom-group .btn-icon{ padding:6px 10px; }
+  .board-zoom-label{ min-width:42px; text-align:center; font-size:12.5px; font-weight:700; color:var(--text-dim); }
+  .board-hint{ padding:6px 18px; font-size:11px; color:var(--text-dim); border-bottom:1px solid var(--border); flex:0 0 auto; }
   .board-canvas-wrap{ flex:1; overflow:auto; position:relative; background:var(--bg); }
-  .board-canvas{ position:relative; width:2400px; height:1600px; }
+  .board-canvas{ position:relative; width:2400px; height:1600px; transform-origin:0 0; }
   .board-card{
     position:absolute; border-radius:8px; overflow:hidden; box-shadow:var(--shadow);
     border:1px solid var(--border); background:var(--surface); cursor:move; user-select:none;
@@ -288,12 +292,20 @@
   .board-card img{ width:100%; height:100%; object-fit:cover; display:block; pointer-events:none; }
   .board-card .board-remove{
     position:absolute; top:4px; right:4px; width:20px; height:20px; border-radius:50%; border:none;
-    background:rgba(0,0,0,.6); color:#fff; font-size:11px; cursor:pointer; padding:0; line-height:1;
+    background:rgba(0,0,0,.6); color:#fff; font-size:11px; cursor:pointer; padding:0; line-height:1; z-index:1;
   }
   .board-card .board-resize{
     position:absolute; right:0; bottom:0; width:16px; height:16px; cursor:nwse-resize;
-    background:var(--accent); border-radius:5px 0 0 0; opacity:.75;
+    background:var(--accent); border-radius:5px 0 0 0; opacity:.75; z-index:1;
   }
+  .board-note{ display:flex; flex-direction:column; background:#fff59d; border-color:#e6d874; cursor:default; }
+  html[data-theme="dark"] .board-note{ background:#4a4423; border-color:#6b6330; }
+  .board-note-handle{ height:18px; flex:0 0 auto; cursor:move; background:rgba(0,0,0,.08); }
+  .board-note-text{
+    flex:1; width:100%; border:none; resize:none; background:transparent; box-sizing:border-box;
+    padding:8px; font-family:inherit; font-size:12.5px; color:#3a3320; outline:none;
+  }
+  html[data-theme="dark"] .board-note-text{ color:#f0ecd6; }
   .board-picker{
     position:absolute; top:calc(100% + 6px); right:36px; width:260px; max-height:70vh; overflow-y:auto;
     background:var(--surface); border:1px solid var(--border); border-radius:12px; box-shadow:var(--shadow);
@@ -590,12 +602,21 @@
     <div class="board-header">
       <h2 id="boardTitle"></h2>
       <div class="board-header-actions">
+        <div class="board-zoom-group">
+          <button type="button" class="btn-icon" id="btnBoardZoomOut" title="축소">−</button>
+          <span class="board-zoom-label" id="boardZoomLabel">100%</span>
+          <button type="button" class="btn-icon" id="btnBoardZoomIn" title="확대">+</button>
+          <button type="button" class="btn-ghost" id="btnBoardZoomReset" title="100%로">리셋</button>
+        </div>
+        <button type="button" class="btn-ghost" id="btnBoardAddNote">+ 메모 추가</button>
         <button type="button" class="btn-ghost" id="btnBoardAdd">+ 레퍼런스 추가</button>
         <div class="board-picker" id="boardPicker"></div>
+        <button type="button" class="btn-ghost" id="btnBoardCapture">📷 이미지로 저장</button>
         <button type="button" class="btn-icon" id="btnBoardClose" title="닫기">✕</button>
       </div>
     </div>
-    <div class="board-canvas-wrap">
+    <div class="board-hint">외부 링크 이미지는 캡처에서 빠질 수 있어요</div>
+    <div class="board-canvas-wrap" id="boardCanvasWrap">
       <div class="board-canvas" id="boardCanvas"></div>
     </div>
   </div>
@@ -652,6 +673,8 @@
   let boardPlacements = [];
   let editingSceneId = null;
   let activeSceneId = null;
+  let boardZoom = 1;
+  let noteSaveTimer = null;
   let editingId = null;
   let currentType = 'image';
   let uploadedDataUrl = null;
@@ -1145,20 +1168,38 @@
     activeSceneId = sceneId;
     $('boardTitle').textContent = `🎞 ${scene.name}`;
     hideBoardPicker();
+    setBoardZoom(1);
     renderBoard();
     boardOverlay.classList.add('open');
   }
 
   function closeBoard(){
+    flushNoteSave();
     boardOverlay.classList.remove('open');
     activeSceneId = null;
     hideBoardPicker();
+  }
+
+  // ---------- zoom (scale the canvas visually; drag/resize math below compensates for it) ----------
+  const BOARD_ZOOM_MIN = 0.25, BOARD_ZOOM_MAX = 2, BOARD_ZOOM_STEP = 0.1;
+  function setBoardZoom(z){
+    boardZoom = Math.min(BOARD_ZOOM_MAX, Math.max(BOARD_ZOOM_MIN, z));
+    $('boardCanvas').style.transform = `scale(${boardZoom})`;
+    $('boardZoomLabel').textContent = Math.round(boardZoom * 100) + '%';
   }
 
   function renderBoard(){
     const canvas = $('boardCanvas');
     const placements = boardPlacements.filter(p => p.sceneId === activeSceneId);
     canvas.innerHTML = placements.map(p => {
+      if(p.type === 'note'){
+        return `<div class="board-card board-note" data-board-card="${p.id}" style="left:${p.x}px; top:${p.y}px; width:${p.w}px; height:${p.h}px; z-index:${p.z};">
+          <div class="board-note-handle" data-board-drag-handle="${p.id}"></div>
+          <button type="button" class="board-remove" data-board-remove="${p.id}" title="보드에서 제거">✕</button>
+          <textarea class="board-note-text" data-board-note-text="${p.id}" placeholder="메모...">${escapeHtml(p.text || '')}</textarea>
+          <div class="board-resize" data-board-resize="${p.id}"></div>
+        </div>`;
+      }
       const item = items.find(i => i.id === p.itemId);
       if(!item) return '';
       const src = (item.thumbs && item.thumbs[0]) || item.url || '';
@@ -1170,7 +1211,10 @@
     }).join('');
 
     canvas.querySelectorAll('[data-board-card]').forEach(card => {
-      card.addEventListener('mousedown', (e) => {
+      // 메모는 상단 손잡이로만 드래그(본문 textarea는 타이핑 전용), 이미지는 카드 전체로 드래그.
+      const handle = card.querySelector('[data-board-drag-handle]');
+      const dragTarget = handle || card;
+      dragTarget.addEventListener('mousedown', (e) => {
         if(e.target.closest('[data-board-resize]') || e.target.closest('[data-board-remove]')) return;
         startDragPlacement(e, card.dataset.boardCard);
       });
@@ -1188,6 +1232,13 @@
         renderBoard();
         renderSceneBar();
         afterDataChange();
+      });
+    });
+    canvas.querySelectorAll('[data-board-note-text]').forEach(ta => {
+      ta.addEventListener('input', () => {
+        const p = boardPlacements.find(x => x.id === ta.dataset.boardNoteText);
+        if(p) p.text = ta.value;
+        scheduleNoteSave();
       });
     });
   }
@@ -1208,8 +1259,10 @@
     if(!dragState) return;
     const p = boardPlacements.find(x => x.id === dragState.id);
     if(!p) return;
-    p.x = Math.max(0, dragState.origX + (e.clientX - dragState.startX));
-    p.y = Math.max(0, dragState.origY + (e.clientY - dragState.startY));
+    // 캔버스가 scale(boardZoom)로 축소/확대돼 있으므로, 화면 픽셀 이동량을 배율로 나눠야
+    // 캔버스 좌표(=줌 100% 기준 좌표)와 마우스 이동이 정확히 같은 비율로 움직인다.
+    p.x = Math.max(0, dragState.origX + (e.clientX - dragState.startX) / boardZoom);
+    p.y = Math.max(0, dragState.origY + (e.clientY - dragState.startY) / boardZoom);
     const card = $('boardCanvas').querySelector(`[data-board-card="${dragState.id}"]`);
     if(card){ card.style.left = p.x + 'px'; card.style.top = p.y + 'px'; }
   }
@@ -1236,8 +1289,8 @@
     if(!resizeState) return;
     const p = boardPlacements.find(x => x.id === resizeState.id);
     if(!p) return;
-    p.w = Math.max(MIN_BOARD_SIZE, resizeState.origW + (e.clientX - resizeState.startX));
-    p.h = Math.max(MIN_BOARD_SIZE, resizeState.origH + (e.clientY - resizeState.startY));
+    p.w = Math.max(MIN_BOARD_SIZE, resizeState.origW + (e.clientX - resizeState.startX) / boardZoom);
+    p.h = Math.max(MIN_BOARD_SIZE, resizeState.origH + (e.clientY - resizeState.startY) / boardZoom);
     const card = $('boardCanvas').querySelector(`[data-board-card="${resizeState.id}"]`);
     if(card){ card.style.width = p.w + 'px'; card.style.height = p.h + 'px'; }
   }
@@ -1258,7 +1311,9 @@
   }
   function renderBoardPicker(){
     const picker = $('boardPicker');
-    const placedIds = new Set(boardPlacements.filter(p => p.sceneId === activeSceneId).map(p => p.itemId));
+    const placedIds = new Set(
+      boardPlacements.filter(p => p.sceneId === activeSceneId && (p.type || 'item') === 'item').map(p => p.itemId)
+    );
     const available = items.filter(i => !placedIds.has(i.id));
     if(available.length === 0){
       picker.innerHTML = '<div class="field-hint">추가할 수 있는 레퍼런스가 없어요.</div>';
@@ -1285,13 +1340,106 @@
     const count = boardPlacements.filter(p => p.sceneId === activeSceneId).length;
     const cascade = (count % 8) * 24;
     boardPlacements.push({
-      id: uid('bp'), sceneId: activeSceneId, itemId,
+      id: uid('bp'), sceneId: activeSceneId, type: 'item', itemId,
       x: 24 + cascade, y: 24 + cascade, w: 220, h: 220, z: maxBoardZ() + 1
     });
     renderBoard();
     renderBoardPicker();
     renderSceneBar();
     afterDataChange();
+  }
+
+  // ---------- board notes (sticky-note placements) ----------
+  function addNoteToBoard(){
+    if(!activeSceneId) return;
+    const count = boardPlacements.filter(p => p.sceneId === activeSceneId).length;
+    const cascade = (count % 8) * 24;
+    const id = uid('bp');
+    boardPlacements.push({
+      id, sceneId: activeSceneId, type: 'note',
+      x: 24 + cascade, y: 24 + cascade, w: 200, h: 150, z: maxBoardZ() + 1, text: ''
+    });
+    renderBoard();
+    renderSceneBar();
+    afterDataChange();
+    const ta = $('boardCanvas').querySelector(`[data-board-note-text="${id}"]`);
+    if(ta) ta.focus();
+  }
+
+  // 메모 입력마다 바로 저장하면 자동저장이 너무 자주 도니, 짧게 디바운스했다가 저장한다.
+  // 보드를 닫을 때는 대기 중인 저장을 즉시 반영(flush)해서 마지막 몇 글자가 유실되지 않게 한다.
+  function scheduleNoteSave(){
+    clearTimeout(noteSaveTimer);
+    noteSaveTimer = setTimeout(() => { noteSaveTimer = null; afterDataChange(); }, 500);
+  }
+  function flushNoteSave(){
+    if(noteSaveTimer){
+      clearTimeout(noteSaveTimer);
+      noteSaveTimer = null;
+      afterDataChange();
+    }
+  }
+
+  // ---------- capture board as PNG (html2canvas, lazy-loaded from CDN) ----------
+  let html2canvasPromise = null;
+  function loadHtml2Canvas(){
+    if(window.html2canvas) return Promise.resolve(window.html2canvas);
+    if(html2canvasPromise) return html2canvasPromise;
+    html2canvasPromise = new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
+      script.onload = () => resolve(window.html2canvas);
+      script.onerror = () => reject(new Error('html2canvas 로드 실패'));
+      document.head.appendChild(script);
+    });
+    return html2canvasPromise;
+  }
+
+  async function captureBoardAsImage(){
+    const scene = scenes.find(s => s.id === activeSceneId);
+    if(!scene) return;
+    const placements = boardPlacements.filter(p => p.sceneId === activeSceneId);
+    if(placements.length === 0){ alert('보드에 저장할 내용이 없어요.'); return; }
+
+    const btn = $('btnBoardCapture');
+    const origLabel = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = '캡처 중...';
+    const canvas = $('boardCanvas');
+    const prevTransform = canvas.style.transform;
+
+    try{
+      const html2canvas = await loadHtml2Canvas();
+      // 줌 배율과 무관하게 항상 100% 기준 화질로 캡처한다.
+      canvas.style.transform = 'scale(1)';
+      await new Promise(r => requestAnimationFrame(r));
+
+      const PAD = 24;
+      const minX = Math.max(0, Math.min(...placements.map(p => p.x)) - PAD);
+      const minY = Math.max(0, Math.min(...placements.map(p => p.y)) - PAD);
+      const maxX = Math.max(...placements.map(p => p.x + p.w)) + PAD;
+      const maxY = Math.max(...placements.map(p => p.y + p.h)) + PAD;
+
+      const shot = await html2canvas(canvas, {
+        backgroundColor: (getComputedStyle(document.documentElement).getPropertyValue('--bg') || '#ffffff').trim(),
+        useCORS: true,
+        x: minX, y: minY, width: maxX - minX, height: maxY - minY,
+        scale: 1
+      });
+
+      const a = document.createElement('a');
+      const stamp = new Date().toISOString().slice(0, 10);
+      a.download = `${scene.name}-${stamp}.png`;
+      a.href = shot.toDataURL('image/png');
+      a.click();
+    } catch(e){
+      console.error('보드 캡처 실패', e);
+      alert('이미지로 저장하는 데 실패했어요.');
+    } finally {
+      canvas.style.transform = prevTransform;
+      btn.disabled = false;
+      btn.textContent = origLabel;
+    }
   }
 
   // ---------- rendering ----------
@@ -1863,13 +2011,20 @@
       });
     const validCategories = [...catByName.values()];
     const itemIdsSet = new Set(validItems.map(i => i.id));
+    // 옛 데이터에는 type이 없었으므로 없으면 'item'으로 취급해 그대로 호환한다.
     const validPlacements = rawPlacements
-      .filter(p => p && p.id && sceneIdsSet.has(p.sceneId) && itemIdsSet.has(p.itemId))
-      .map(p => ({
-        id: p.id, sceneId: p.sceneId, itemId: p.itemId,
-        x: Number(p.x) || 0, y: Number(p.y) || 0,
-        w: Number(p.w) || 220, h: Number(p.h) || 220, z: Number(p.z) || 0
-      }));
+      .filter(p => p && p.id && sceneIdsSet.has(p.sceneId) && (p.type === 'note' ? true : itemIdsSet.has(p.itemId)))
+      .map(p => {
+        const type = p.type === 'note' ? 'note' : 'item';
+        const base = {
+          id: p.id, sceneId: p.sceneId, type,
+          x: Number(p.x) || 0, y: Number(p.y) || 0,
+          w: Number(p.w) || (type === 'note' ? 200 : 220),
+          h: Number(p.h) || (type === 'note' ? 150 : 220),
+          z: Number(p.z) || 0
+        };
+        return type === 'note' ? { ...base, text: typeof p.text === 'string' ? p.text : '' } : { ...base, itemId: p.itemId };
+      });
     return {
       items: validItems, categories: validCategories, folders: validFolders,
       projects: validProjects, scenes: validScenes, boardPlacements: validPlacements
@@ -2197,6 +2352,17 @@
     const picker = $('boardPicker');
     if(picker.classList.contains('open') && !picker.contains(e.target) && e.target.id !== 'btnBoardAdd') hideBoardPicker();
   });
+  $('btnBoardAddNote').addEventListener('click', addNoteToBoard);
+  $('btnBoardCapture').addEventListener('click', captureBoardAsImage);
+
+  $('btnBoardZoomIn').addEventListener('click', () => setBoardZoom(boardZoom + BOARD_ZOOM_STEP));
+  $('btnBoardZoomOut').addEventListener('click', () => setBoardZoom(boardZoom - BOARD_ZOOM_STEP));
+  $('btnBoardZoomReset').addEventListener('click', () => setBoardZoom(1));
+  $('boardCanvasWrap').addEventListener('wheel', (e) => {
+    if(!(e.ctrlKey || e.metaKey)) return; // Ctrl+휠 또는 트랙패드 핀치(둘 다 ctrlKey가 true로 옴)
+    e.preventDefault();
+    setBoardZoom(boardZoom + (e.deltaY > 0 ? -BOARD_ZOOM_STEP : BOARD_ZOOM_STEP));
+  }, { passive: false });
 
   $('btnPreviewClose').addEventListener('click', closePreview);
   previewOverlay.addEventListener('click', (e) => { if(e.target === previewOverlay) closePreview(); });
