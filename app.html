@@ -289,7 +289,7 @@
     position:absolute; border-radius:8px; overflow:hidden; box-shadow:var(--shadow);
     border:1px solid var(--border); background:var(--surface); cursor:move; user-select:none;
   }
-  .board-card img{ width:100%; height:100%; object-fit:cover; display:block; pointer-events:none; }
+  .board-card img{ width:100%; height:100%; object-fit:contain; display:block; pointer-events:none; }
   .board-card .board-remove{
     position:absolute; top:4px; right:4px; width:20px; height:20px; border-radius:50%; border:none;
     background:rgba(0,0,0,.6); color:#fff; font-size:11px; cursor:pointer; padding:0; line-height:1; z-index:1;
@@ -615,7 +615,7 @@
         <button type="button" class="btn-icon" id="btnBoardClose" title="닫기">✕</button>
       </div>
     </div>
-    <div class="board-hint">외부 링크 이미지는 캡처에서 빠질 수 있어요</div>
+    <div class="board-hint">외부 링크 이미지는 캡처에서 빠질 수 있어요 · 카드를 캔버스로 드래그해서 추가할 수도 있어요</div>
     <div class="board-canvas-wrap" id="boardCanvasWrap">
       <div class="board-canvas" id="boardCanvas"></div>
     </div>
@@ -688,10 +688,16 @@
   let bulkMode = false;
   let selectedIds = new Set();
   let pipWindow = null;
+  let boardWindow = null;
   let previewItemId = null;
   const supportsFS = 'showSaveFilePicker' in window && 'showOpenFilePicker' in window;
 
   const $ = (id) => document.getElementById(id);
+  // 무드보드가 PiP 창으로 떠 있으면 그 창의 document를, 아니면(미지원 브라우저 등 폴백)
+  // 메인 문서를 기준으로 보드 요소를 찾는다. 보드 관련 함수들은 전부 $b/boardDoc를 통해
+  // "지금 보드가 실제로 어느 문서에 그려지고 있는지"에 맞춰 동작한다.
+  function boardDoc(){ return (boardWindow && !boardWindow.closed) ? boardWindow.document : document; }
+  function $b(id){ return boardDoc().getElementById(id); }
   const grid = $('grid');
   const overlay = $('overlay');
   const folderOverlay = $('folderOverlay');
@@ -1162,12 +1168,129 @@
     return boardPlacements.reduce((m, p) => Math.max(m, p.z || 0), 0);
   }
 
-  function openBoard(sceneId){
+  // PiP 창은 빈 문서로 시작하므로, 메인 페이지의 <style>을 그대로 복사해 넣어야
+  // .board-* 클래스와 --bg/--accent 같은 색상 변수가 동일하게 적용된다.
+  function copyStylesToWindow(win){
+    [...document.styleSheets].forEach(styleSheet => {
+      try{
+        const cssText = [...styleSheet.cssRules].map(rule => rule.cssText).join('\n');
+        const style = win.document.createElement('style');
+        style.textContent = cssText;
+        win.document.head.appendChild(style);
+      } catch(e){
+        // 접근할 수 없는(교차 출처) 스타일시트면 링크로라도 걸어준다. 이 앱은 스타일이
+        // 전부 인라인 <style>이라 실제로는 이 분기를 탈 일이 거의 없다.
+        if(styleSheet.href){
+          const link = win.document.createElement('link');
+          link.rel = 'stylesheet';
+          link.href = styleSheet.href;
+          win.document.head.appendChild(link);
+        }
+      }
+    });
+  }
+
+  function onBoardWindowClosed(){
+    boardWindow = null;
+    activeSceneId = null;
+  }
+
+  async function ensureBoardWindow(scene){
+    // Document Picture-in-Picture는 페이지당 한 번에 한 창만 띄울 수 있다. "항상 위에
+    // 띄우기"(pipWindow)가 이미 떠 있다면 requestWindow()가 그 창을 자동으로 닫고 이 창으로
+    // 교체해준다 — 그 창의 자체 pagehide 핸들러가 pipWindow를 알아서 null로 정리하므로
+    // 여기서 별도 처리는 필요 없다.
+    const win = await documentPictureInPicture.requestWindow({ width: 900, height: 600 });
+    boardWindow = win;
+    win.document.title = scene.name;
+    win.document.documentElement.setAttribute('data-theme', document.documentElement.getAttribute('data-theme') || '');
+    copyStylesToWindow(win);
+
+    const extraStyle = win.document.createElement('style');
+    extraStyle.textContent = `
+      html, body{ height:100%; margin:0; overflow:hidden; }
+      body{ display:flex; flex-direction:column; }
+    `;
+    win.document.head.appendChild(extraStyle);
+
+    win.document.body.innerHTML = `
+      <div class="board-header">
+        <h2 id="boardTitle"></h2>
+        <div class="board-header-actions">
+          <div class="board-zoom-group">
+            <button type="button" class="btn-icon" id="btnBoardZoomOut" title="축소">−</button>
+            <span class="board-zoom-label" id="boardZoomLabel">100%</span>
+            <button type="button" class="btn-icon" id="btnBoardZoomIn" title="확대">+</button>
+            <button type="button" class="btn-ghost" id="btnBoardZoomReset" title="100%로">리셋</button>
+          </div>
+          <button type="button" class="btn-ghost" id="btnBoardAddNote">+ 메모 추가</button>
+          <button type="button" class="btn-ghost" id="btnBoardAdd">+ 레퍼런스 추가</button>
+          <div class="board-picker" id="boardPicker"></div>
+          <button type="button" class="btn-ghost" id="btnBoardCapture">📷 이미지로 저장</button>
+        </div>
+      </div>
+      <div class="board-hint">외부 링크 이미지는 캡처에서 빠질 수 있어요 · 메인 화면 카드를 이 창으로 드래그해서 추가할 수도 있어요</div>
+      <div class="board-canvas-wrap" id="boardCanvasWrap">
+        <div class="board-canvas" id="boardCanvas"></div>
+      </div>
+    `;
+    win.document.getElementById('boardTitle').textContent = `🎞 ${scene.name}`;
+
+    wirePipBoardControls(win);
+    win.addEventListener('pagehide', () => { if(boardWindow === win) onBoardWindowClosed(); });
+
+    setBoardZoom(1);
+    renderBoard();
+  }
+
+  // PiP 창 안의 버튼/캔버스에 이벤트를 붙인다. 창을 열 때마다 완전히 새 document이므로
+  // (메인 페이지 하단의 정적 wiring과 달리) 중복 등록 걱정 없이 매번 새로 붙이면 된다.
+  function wirePipBoardControls(win){
+    const d = win.document;
+    d.getElementById('btnBoardZoomIn').addEventListener('click', () => setBoardZoom(boardZoom + BOARD_ZOOM_STEP));
+    d.getElementById('btnBoardZoomOut').addEventListener('click', () => setBoardZoom(boardZoom - BOARD_ZOOM_STEP));
+    d.getElementById('btnBoardZoomReset').addEventListener('click', () => setBoardZoom(1));
+    d.getElementById('btnBoardAddNote').addEventListener('click', addNoteToBoard);
+    d.getElementById('btnBoardAdd').addEventListener('click', (e) => { e.stopPropagation(); toggleBoardPicker(); });
+    d.getElementById('btnBoardCapture').addEventListener('click', captureBoardAsImage);
+    d.addEventListener('click', (e) => {
+      const picker = $b('boardPicker');
+      if(picker && picker.classList.contains('open') && !picker.contains(e.target) && e.target.id !== 'btnBoardAdd') hideBoardPicker();
+    });
+    d.getElementById('boardCanvasWrap').addEventListener('wheel', (e) => {
+      if(!(e.ctrlKey || e.metaKey)) return;
+      e.preventDefault();
+      setBoardZoom(boardZoom + (e.deltaY > 0 ? -BOARD_ZOOM_STEP : BOARD_ZOOM_STEP));
+    }, { passive: false });
+    d.addEventListener('keydown', (e) => { if(e.key === 'Escape') closeBoard(); });
+
+    // 메인 화면의 레퍼런스 카드를 이 창으로 드래그해서 놓으면 바로 보드에 추가한다.
+    const canvas = d.getElementById('boardCanvas');
+    canvas.addEventListener('dragover', (e) => { e.preventDefault(); });
+    canvas.addEventListener('drop', (e) => {
+      e.preventDefault();
+      const itemId = e.dataTransfer.getData('text/plain');
+      if(itemId) addToBoard(itemId);
+    });
+  }
+
+  // 무드보드는 가능하면 "항상 위에 띄우기"와 같은 Document Picture-in-Picture 창으로 띄워서
+  // 메인 화면(레퍼런스 목록)을 가리지 않게 한다. 미지원 브라우저에서는 기존 모달로 대체한다.
+  async function openBoard(sceneId){
     const scene = scenes.find(s => s.id === sceneId);
     if(!scene) return;
     activeSceneId = sceneId;
-    $('boardTitle').textContent = `🎞 ${scene.name}`;
     hideBoardPicker();
+    if(supportsPip()){
+      try{
+        await ensureBoardWindow(scene);
+        return;
+      } catch(e){
+        console.error('무드보드 창을 열지 못해 기존 화면으로 보여줘요', e);
+      }
+    }
+    boardWindow = null;
+    $b('boardTitle').textContent = `🎞 ${scene.name}`;
     setBoardZoom(1);
     renderBoard();
     boardOverlay.classList.add('open');
@@ -1175,6 +1298,10 @@
 
   function closeBoard(){
     flushNoteSave();
+    if(boardWindow && !boardWindow.closed){
+      boardWindow.close(); // pagehide 핸들러가 아래 정리를 이어서 한다
+      return;
+    }
     boardOverlay.classList.remove('open');
     activeSceneId = null;
     hideBoardPicker();
@@ -1184,12 +1311,12 @@
   const BOARD_ZOOM_MIN = 0.25, BOARD_ZOOM_MAX = 2, BOARD_ZOOM_STEP = 0.1;
   function setBoardZoom(z){
     boardZoom = Math.min(BOARD_ZOOM_MAX, Math.max(BOARD_ZOOM_MIN, z));
-    $('boardCanvas').style.transform = `scale(${boardZoom})`;
-    $('boardZoomLabel').textContent = Math.round(boardZoom * 100) + '%';
+    $b('boardCanvas').style.transform = `scale(${boardZoom})`;
+    $b('boardZoomLabel').textContent = Math.round(boardZoom * 100) + '%';
   }
 
   function renderBoard(){
-    const canvas = $('boardCanvas');
+    const canvas = $b('boardCanvas');
     const placements = boardPlacements.filter(p => p.sceneId === activeSceneId);
     canvas.innerHTML = placements.map(p => {
       if(p.type === 'note'){
@@ -1243,17 +1370,21 @@
     });
   }
 
+  // 드래그·리사이즈 중 mousemove/mouseup은 "지금 보드가 실제로 그려지고 있는 문서"
+  // (PiP 창이면 그 창의 document, 폴백이면 메인 document)에 붙여야 한다. 메인 document에
+  // 고정해서 붙이면, PiP 창 안에서 드래그할 때 그 이벤트가 메인 페이지로는 전달되지 않아
+  // 동작하지 않는다.
   let dragState = null;
   function startDragPlacement(e, placementId){
     e.preventDefault();
     const p = boardPlacements.find(x => x.id === placementId);
     if(!p) return;
     p.z = maxBoardZ() + 1;
-    const card = $('boardCanvas').querySelector(`[data-board-card="${placementId}"]`);
+    const card = $b('boardCanvas').querySelector(`[data-board-card="${placementId}"]`);
     if(card) card.style.zIndex = p.z;
     dragState = { id: placementId, startX: e.clientX, startY: e.clientY, origX: p.x, origY: p.y };
-    document.addEventListener('mousemove', onDragMove);
-    document.addEventListener('mouseup', onDragEnd);
+    boardDoc().addEventListener('mousemove', onDragMove);
+    boardDoc().addEventListener('mouseup', onDragEnd);
   }
   function onDragMove(e){
     if(!dragState) return;
@@ -1263,12 +1394,12 @@
     // 캔버스 좌표(=줌 100% 기준 좌표)와 마우스 이동이 정확히 같은 비율로 움직인다.
     p.x = Math.max(0, dragState.origX + (e.clientX - dragState.startX) / boardZoom);
     p.y = Math.max(0, dragState.origY + (e.clientY - dragState.startY) / boardZoom);
-    const card = $('boardCanvas').querySelector(`[data-board-card="${dragState.id}"]`);
+    const card = $b('boardCanvas').querySelector(`[data-board-card="${dragState.id}"]`);
     if(card){ card.style.left = p.x + 'px'; card.style.top = p.y + 'px'; }
   }
   function onDragEnd(){
-    document.removeEventListener('mousemove', onDragMove);
-    document.removeEventListener('mouseup', onDragEnd);
+    boardDoc().removeEventListener('mousemove', onDragMove);
+    boardDoc().removeEventListener('mouseup', onDragEnd);
     if(dragState){ dragState = null; afterDataChange(); }
   }
 
@@ -1279,11 +1410,11 @@
     const p = boardPlacements.find(x => x.id === placementId);
     if(!p) return;
     p.z = maxBoardZ() + 1;
-    const card = $('boardCanvas').querySelector(`[data-board-card="${placementId}"]`);
+    const card = $b('boardCanvas').querySelector(`[data-board-card="${placementId}"]`);
     if(card) card.style.zIndex = p.z;
     resizeState = { id: placementId, startX: e.clientX, startY: e.clientY, origW: p.w, origH: p.h };
-    document.addEventListener('mousemove', onResizeMove);
-    document.addEventListener('mouseup', onResizeEnd);
+    boardDoc().addEventListener('mousemove', onResizeMove);
+    boardDoc().addEventListener('mouseup', onResizeEnd);
   }
   function onResizeMove(e){
     if(!resizeState) return;
@@ -1291,26 +1422,27 @@
     if(!p) return;
     p.w = Math.max(MIN_BOARD_SIZE, resizeState.origW + (e.clientX - resizeState.startX) / boardZoom);
     p.h = Math.max(MIN_BOARD_SIZE, resizeState.origH + (e.clientY - resizeState.startY) / boardZoom);
-    const card = $('boardCanvas').querySelector(`[data-board-card="${resizeState.id}"]`);
+    const card = $b('boardCanvas').querySelector(`[data-board-card="${resizeState.id}"]`);
     if(card){ card.style.width = p.w + 'px'; card.style.height = p.h + 'px'; }
   }
   function onResizeEnd(){
-    document.removeEventListener('mousemove', onResizeMove);
-    document.removeEventListener('mouseup', onResizeEnd);
+    boardDoc().removeEventListener('mousemove', onResizeMove);
+    boardDoc().removeEventListener('mouseup', onResizeEnd);
     if(resizeState){ resizeState = null; afterDataChange(); }
   }
 
   // ---------- board reference picker ("+ 레퍼런스 추가") ----------
   function toggleBoardPicker(){
-    const picker = $('boardPicker');
+    const picker = $b('boardPicker');
     picker.classList.toggle('open');
     if(picker.classList.contains('open')) renderBoardPicker();
   }
   function hideBoardPicker(){
-    $('boardPicker').classList.remove('open');
+    const picker = $b('boardPicker');
+    if(picker) picker.classList.remove('open');
   }
   function renderBoardPicker(){
-    const picker = $('boardPicker');
+    const picker = $b('boardPicker');
     const placedIds = new Set(
       boardPlacements.filter(p => p.sceneId === activeSceneId && (p.type || 'item') === 'item').map(p => p.itemId)
     );
@@ -1330,18 +1462,31 @@
 
   // 보드에 올리면 그 장면이 속한 프로젝트에도 자동으로 배정한다
   // (장면은 프로젝트 하위 개념이므로 보드에 있으면 그 프로젝트에도 속하는 게 자연스럽다).
-  function addToBoard(itemId){
+  // 정사각형으로 고정하면 이미지가 잘려 보이므로, 원본 이미지의 가로세로 비율을 읽어와
+  // 그 비율 그대로(긴 변 기준 BOARD_DEFAULT_MAX 이하로 축소해서) 기본 크기를 잡는다.
+  const BOARD_DEFAULT_MAX = 260;
+  async function addToBoard(itemId){
     const scene = scenes.find(s => s.id === activeSceneId);
     const item = items.find(i => i.id === itemId);
     if(!scene || !item) return;
     if(!(item.projectIds || []).includes(scene.projectId)){
       item.projectIds = [...(item.projectIds || []), scene.projectId];
     }
+    const src = (item.thumbs && item.thumbs[0]) || item.url || '';
+    let w = BOARD_DEFAULT_MAX, h = BOARD_DEFAULT_MAX;
+    try{
+      const img = await loadImageEl(src);
+      const scale = Math.min(1, BOARD_DEFAULT_MAX / Math.max(img.naturalWidth, img.naturalHeight));
+      w = Math.max(MIN_BOARD_SIZE, Math.round(img.naturalWidth * scale));
+      h = Math.max(MIN_BOARD_SIZE, Math.round(img.naturalHeight * scale));
+    } catch(e){
+      console.error('보드에 올릴 이미지 크기를 읽지 못해 기본 정사각형 크기를 사용해요', e);
+    }
     const count = boardPlacements.filter(p => p.sceneId === activeSceneId).length;
     const cascade = (count % 8) * 24;
     boardPlacements.push({
       id: uid('bp'), sceneId: activeSceneId, type: 'item', itemId,
-      x: 24 + cascade, y: 24 + cascade, w: 220, h: 220, z: maxBoardZ() + 1
+      x: 24 + cascade, y: 24 + cascade, w, h, z: maxBoardZ() + 1
     });
     renderBoard();
     renderBoardPicker();
@@ -1362,7 +1507,7 @@
     renderBoard();
     renderSceneBar();
     afterDataChange();
-    const ta = $('boardCanvas').querySelector(`[data-board-note-text="${id}"]`);
+    const ta = $b('boardCanvas').querySelector(`[data-board-note-text="${id}"]`);
     if(ta) ta.focus();
   }
 
@@ -1401,18 +1546,21 @@
     const placements = boardPlacements.filter(p => p.sceneId === activeSceneId);
     if(placements.length === 0){ alert('보드에 저장할 내용이 없어요.'); return; }
 
-    const btn = $('btnBoardCapture');
+    const btn = $b('btnBoardCapture');
     const origLabel = btn.textContent;
     btn.disabled = true;
     btn.textContent = '캡처 중...';
-    const canvas = $('boardCanvas');
+    const canvas = $b('boardCanvas');
     const prevTransform = canvas.style.transform;
 
     try{
       const html2canvas = await loadHtml2Canvas();
       // 줌 배율과 무관하게 항상 100% 기준 화질로 캡처한다.
       canvas.style.transform = 'scale(1)';
-      await new Promise(r => requestAnimationFrame(r));
+      // requestAnimationFrame은 탭이 화면에 그려지고 있지 않으면(예: 백그라운드 탭) 아예
+      // 발동하지 않을 수 있어 무한정 멈출 위험이 있다. setTimeout은 그런 상황에서도
+      // 확실히 발동하므로, 스타일 반영을 기다리는 용도로는 이쪽이 더 안전하다.
+      await new Promise(r => setTimeout(r, 50));
 
       const PAD = 24;
       const minX = Math.max(0, Math.min(...placements.map(p => p.x)) - PAD);
@@ -1421,7 +1569,7 @@
       const maxY = Math.max(...placements.map(p => p.y + p.h)) + PAD;
 
       const shot = await html2canvas(canvas, {
-        backgroundColor: (getComputedStyle(document.documentElement).getPropertyValue('--bg') || '#ffffff').trim(),
+        backgroundColor: (getComputedStyle(boardDoc().documentElement).getPropertyValue('--bg') || '#ffffff').trim(),
         useCORS: true,
         x: minX, y: minY, width: maxX - minX, height: maxY - minY,
         scale: 1
@@ -1592,6 +1740,13 @@
     grid.querySelectorAll('[data-preview]').forEach(el => el.addEventListener('click', () => openPreview(el.dataset.preview)));
     grid.querySelectorAll('[data-pin]').forEach(btn => btn.addEventListener('click', (e) => { e.stopPropagation(); togglePin(btn.dataset.pin); }));
     grid.querySelectorAll('[data-float]').forEach(btn => btn.addEventListener('click', (e) => { e.stopPropagation(); openInFloatBoard(btn.dataset.float); }));
+    // 무드보드 창으로 카드를 드래그해서 놓으면 바로 그 장면 보드에 추가할 수 있게 id를 실어둔다.
+    grid.querySelectorAll('[data-card-id]').forEach(card => {
+      card.addEventListener('dragstart', (e) => {
+        e.dataTransfer.setData('text/plain', card.dataset.cardId);
+        e.dataTransfer.effectAllowed = 'copy';
+      });
+    });
     if(bulkMode){
       grid.querySelectorAll('.bulk-check').forEach(label => label.addEventListener('click', (e) => e.stopPropagation()));
       grid.querySelectorAll('[data-select]').forEach(cb => {
@@ -1634,7 +1789,7 @@
       ? `<label class="bulk-check"><input type="checkbox" data-select="${item.id}" ${selectedIds.has(item.id)?'checked':''}></label>`
       : '';
     return `
-    <div class="card">
+    <div class="card" draggable="true" data-card-id="${item.id}">
       <div class="${thumbClass}" data-preview="${item.id}" title="크게 보기">
         <span class="type-badge">${item.type === 'youtube' ? '유튜브' : '이미지'}</span>
         ${checkHtml}
@@ -2363,6 +2518,13 @@
     e.preventDefault();
     setBoardZoom(boardZoom + (e.deltaY > 0 ? -BOARD_ZOOM_STEP : BOARD_ZOOM_STEP));
   }, { passive: false });
+  // PiP 미지원 브라우저의 폴백 모달에서도 카드 드래그 추가가 동일하게 되도록 맞춰준다.
+  $('boardCanvas').addEventListener('dragover', (e) => { e.preventDefault(); });
+  $('boardCanvas').addEventListener('drop', (e) => {
+    e.preventDefault();
+    const itemId = e.dataTransfer.getData('text/plain');
+    if(itemId) addToBoard(itemId);
+  });
 
   $('btnPreviewClose').addEventListener('click', closePreview);
   previewOverlay.addEventListener('click', (e) => { if(e.target === previewOverlay) closePreview(); });
