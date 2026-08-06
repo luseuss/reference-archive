@@ -642,12 +642,23 @@
   <div class="modal">
     <h2>웹에서 바로 담아오기</h2>
     <div class="field-hint" style="margin-bottom:14px; font-size:12.5px; line-height:1.6;">
-      아래 버튼을 브라우저 북마크바로 드래그해서 등록해두세요. 이후 핀터레스트, 인스타그램 같은 곳에서 레퍼런스를 보다가 이 북마크를 누르면, 지금 보고 있는 가장 큰 이미지를 찾아서 이 앱의 "레퍼런스 추가" 화면으로 바로 가져와요.
+      아래 버튼으로 북마클릿 링크를 복사한 뒤, 브라우저에 새 북마크를 만들 때 주소란에 붙여넣어 등록해두세요. 이후 핀터레스트, 인스타그램 같은 곳에서 레퍼런스를 보다가 이 북마크를 누르면, 지금 보고 있는 가장 큰 이미지를 찾아서 이 앱의 "레퍼런스 추가" 화면으로 바로 가져와요.
     </div>
-    <div style="text-align:center; margin:18px 0;">
-      <a href="#" id="bookmarkletLink" class="btn-primary" style="display:inline-block; text-decoration:none;">📌 레퍼런스 담기</a>
+    <div style="text-align:center; margin:18px 0; display:flex; flex-direction:column; gap:8px; align-items:center;">
+      <button type="button" class="btn-primary" id="btnCopyBookmarklet">📋 북마클릿 링크 복사하기</button>
+      <div class="field-hint" id="copyStatus" style="display:none; font-weight:700;"></div>
     </div>
-    <div class="field-hint">드래그가 잘 안 되면 이 버튼을 우클릭 → 링크 복사 후, 새 북마크를 만들 때 주소란에 붙여넣어도 돼요. (자동 저장을 연결해둔 브라우저에서 사용해야 같은 파일에 저장돼요.)</div>
+    <div class="field-hint" style="line-height:1.6;">
+      <b>등록 방법</b> (Chrome/Edge) — 북마크바 빈 곳 우클릭 → "페이지 추가" (또는 북마크 관리자에서 "새 북마크") → 이름은 자유롭게, URL란에 방금 복사한 링크 붙여넣기.
+    </div>
+    <details style="margin-top:10px;">
+      <summary style="cursor:pointer; font-size:12px; color:var(--text-dim); font-weight:700;">드래그로 등록하고 싶다면</summary>
+      <div style="text-align:center; margin:12px 0;">
+        <a href="#" id="bookmarkletLink" class="btn-ghost" style="display:inline-block; text-decoration:none;">📌 레퍼런스 담기 (드래그용)</a>
+      </div>
+      <div class="field-hint">이 버튼을 브라우저 북마크바로 드래그하면 바로 등록돼요.</div>
+    </details>
+    <div class="field-hint" style="margin-top:10px;">자동 저장을 연결해둔 브라우저에서 사용해야 같은 파일에 저장돼요.</div>
     <div class="modal-actions">
       <button class="btn-ghost" id="btnCaptureClose">닫기</button>
     </div>
@@ -2457,6 +2468,23 @@
     return 'javascript:' + encodeURIComponent('(' + src + ')();');
   }
 
+  // 드래그가 불편하다는 피드백이 있어서, 클립보드로 복사한 뒤 사용자가 직접 새 북마크의
+  // 주소란에 붙여넣는 방식을 기본으로 제공한다(웹페이지가 브라우저 북마크바에 직접 항목을
+  // 추가할 수 있는 API는 없어서, 드래그와 복사-붙여넣기가 사실상 유일한 두 방법이다).
+  async function copyBookmarkletLink(){
+    const status = $('copyStatus');
+    try{
+      await navigator.clipboard.writeText(buildBookmarklet());
+      status.textContent = '✅ 복사했어요! 새 북마크의 주소란에 붙여넣으세요.';
+      status.style.color = 'var(--accent)';
+    } catch(e){
+      console.error('클립보드 복사 실패', e);
+      status.textContent = '복사에 실패했어요. 아래 "드래그로 등록하고 싶다면"을 이용해주세요.';
+      status.style.color = 'var(--danger)';
+    }
+    status.style.display = 'block';
+  }
+
   // 북마클릿이 이미지 URL을 담아 add=1로 다시 열었을 때, 그 정보로
   // "레퍼런스 추가" 모달을 미리 채워서 연다.
   function tryPrefillFromUrlParams(){
@@ -2674,9 +2702,11 @@
 
   $('btnCapture').addEventListener('click', () => {
     $('bookmarkletLink').href = buildBookmarklet();
+    $('copyStatus').style.display = 'none';
     captureOverlay.classList.add('open');
   });
   $('bookmarkletLink').addEventListener('click', (e) => e.preventDefault());
+  $('btnCopyBookmarklet').addEventListener('click', copyBookmarkletLink);
   $('btnCaptureClose').addEventListener('click', () => captureOverlay.classList.remove('open'));
   captureOverlay.addEventListener('click', (e) => { if(e.target === captureOverlay) captureOverlay.classList.remove('open'); });
 
