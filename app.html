@@ -296,6 +296,18 @@
   .board-align-group{ display:flex; align-items:center; gap:4px; }
   .board-align-group .btn-icon{ padding:5px 8px; font-size:12px; line-height:1; }
   .board-align-group .btn-icon:disabled{ opacity:.4; cursor:not-allowed; }
+  .board-context-menu{
+    position:fixed; z-index:50; min-width:190px; background:var(--surface); border:1px solid var(--border);
+    border-radius:10px; box-shadow:var(--shadow); padding:6px; display:none; font-size:12.5px;
+  }
+  .board-context-menu.open{ display:block; }
+  .board-context-menu .ctx-item{
+    display:flex; align-items:center; gap:8px; padding:7px 10px; border-radius:7px; cursor:pointer;
+    color:var(--text); white-space:nowrap;
+  }
+  .board-context-menu .ctx-item:hover{ background:var(--accent-soft); }
+  .board-context-menu .ctx-item.disabled{ opacity:.4; cursor:not-allowed; pointer-events:none; }
+  .board-context-menu .ctx-sep{ height:1px; background:var(--border); margin:5px 2px; }
   .board-canvas-wrap{ flex:1; overflow:auto; position:relative; background:var(--bg); }
   .board-canvas{ position:relative; width:2400px; height:1600px; transform-origin:0 0; }
   .board-card{
@@ -672,6 +684,7 @@
     <div class="board-canvas-wrap" id="boardCanvasWrap">
       <div class="board-canvas" id="boardCanvas"></div>
     </div>
+    <div class="board-context-menu" id="boardContextMenu"></div>
   </div>
 </div>
 
@@ -742,6 +755,7 @@
   let boardGridSnap = false;
   let selectedPlacementIds = new Set();
   let marqueeState = null;
+  let boardContextMenuState = null; // { kind: 'canvas'|'card', x, y } — x/y는 우클릭 시점의 캔버스 좌표(메모 배치용)
   let noteSaveTimer = null;
   let editingId = null;
   let currentType = 'image';
@@ -1439,6 +1453,7 @@
       <div class="board-canvas-wrap" id="boardCanvasWrap">
         <div class="board-canvas" id="boardCanvas"></div>
       </div>
+      <div class="board-context-menu" id="boardContextMenu"></div>
       ${PREVIEW_OVERLAY_HTML}
     `;
     win.document.getElementById('boardTitle').textContent = `🎞 ${scene.name}`;
@@ -1504,6 +1519,8 @@
     d.addEventListener('click', (e) => {
       const picker = $b('boardPicker');
       if(picker && picker.classList.contains('open') && !picker.contains(e.target) && e.target.id !== 'btnBoardAdd') hideBoardPicker();
+      const ctxMenu = $b('boardContextMenu');
+      if(ctxMenu && ctxMenu.classList.contains('open') && !ctxMenu.contains(e.target)) closeBoardContextMenu();
     });
     d.getElementById('boardCanvasWrap').addEventListener('wheel', (e) => {
       if(!(e.ctrlKey || e.metaKey)) return;
@@ -1514,6 +1531,7 @@
       if(e.key === 'Escape'){
         const po = d.getElementById('previewOverlay');
         if(po && po.classList.contains('open')){ closePreview(); return; }
+        if(boardContextMenuState){ closeBoardContextMenu(); return; }
         if(selectedPlacementIds.size > 0){ clearBoardSelection(); return; }
         closeBoard();
         return;
@@ -1534,6 +1552,8 @@
     });
     // 빈 캔버스를 드래그하면 마퀴 선택을 시작한다.
     canvas.addEventListener('mousedown', startBoardMarquee);
+    // 우클릭 컨텍스트 메뉴 — 카드 위/빈 캔버스 둘 다 이 리스너 하나로 처리(contextmenu는 버블링됨).
+    canvas.addEventListener('contextmenu', openBoardContextMenu);
   }
 
   // 무드보드는 가능하면 "항상 위에 띄우기"와 같은 Document Picture-in-Picture 창으로 띄워서
@@ -1568,6 +1588,7 @@
     boardOverlay.classList.remove('open');
     activeSceneId = null;
     hideBoardPicker();
+    closeBoardContextMenu();
   }
 
   // ---------- zoom (scale the canvas visually; drag/resize math below compensates for it) ----------
@@ -1612,7 +1633,9 @@
       const handle = card.querySelector('[data-board-drag-handle]');
       const dragTarget = handle || card;
       dragTarget.addEventListener('mousedown', (e) => {
+        if(e.button !== 0) return; // 우클릭은 컨텍스트 메뉴 전용 — 드래그/클릭 프리뷰 로직을 타지 않게 막는다
         if(e.target.closest('[data-board-resize]') || e.target.closest('[data-board-remove]')) return;
+        closeBoardContextMenu();
         const id = card.dataset.boardCard;
         // Shift+클릭은 드래그를 시작하지 않고 선택 목록에만 넣거나 뺀다.
         if(e.shiftKey){
@@ -1631,6 +1654,7 @@
     });
     canvas.querySelectorAll('[data-board-resize]').forEach(handle => {
       handle.addEventListener('mousedown', (e) => {
+        if(e.button !== 0) return;
         e.stopPropagation();
         startResizePlacement(e, handle.dataset.boardResize);
       });
@@ -1763,11 +1787,119 @@
     afterDataChange();
   }
 
+  function removeSelectedPlacements(){
+    if(selectedPlacementIds.size === 0) return;
+    boardPlacements = boardPlacements.filter(p => !selectedPlacementIds.has(p.id));
+    selectedPlacementIds = new Set();
+    renderBoard();
+    renderSceneBar();
+    afterDataChange();
+  }
+
+  // ---------- 우클릭 컨텍스트 메뉴 ----------
+  // 상단 툴바 버튼들과 똑같은 동작을 우클릭으로도 쓸 수 있게 한다. 빈 캔버스에서 우클릭하면
+  // "추가" 계열, 카드 위에서 우클릭하면 "선택/정렬/제거" 계열 메뉴가 뜬다.
+  function closeBoardContextMenu(){
+    const menu = $b('boardContextMenu');
+    if(menu){ menu.classList.remove('open'); menu.innerHTML = ''; }
+    boardContextMenuState = null;
+  }
+
+  function openBoardContextMenu(e){
+    e.preventDefault();
+    const canvas = $b('boardCanvas');
+    const rect = canvas.getBoundingClientRect();
+    const cardEl = e.target.closest('[data-board-card]');
+    const cardId = cardEl ? cardEl.dataset.boardCard : null;
+    // 아직 선택 안 된 카드를 우클릭하면 그 카드 하나만 선택한다. 이미 여러 개 선택된 상태에서
+    // 그 중 하나를 우클릭했다면 선택을 그대로 유지해서 다중 선택 메뉴(정렬 등)를 쓸 수 있게 한다.
+    if(cardId && !(selectedPlacementIds.has(cardId) && selectedPlacementIds.size > 1)){
+      setSelection([cardId]);
+    }
+    const clickX = (e.clientX - rect.left) / boardZoom;
+    const clickY = (e.clientY - rect.top) / boardZoom;
+    boardContextMenuState = { kind: cardId ? 'card' : 'canvas', x: clickX, y: clickY };
+    renderBoardContextMenu(e.clientX, e.clientY);
+  }
+
+  function ctxItem(action, label, disabled){
+    return `<div class="ctx-item${disabled ? ' disabled' : ''}" data-ctx-action="${action}">${label}</div>`;
+  }
+
+  function renderBoardContextMenu(clientX, clientY){
+    const menu = $b('boardContextMenu');
+    if(!menu || !boardContextMenuState) return;
+    const n = selectedPlacementIds.size;
+    let html;
+    if(boardContextMenuState.kind === 'card'){
+      const hasGroup = boardPlacements.some(p => selectedPlacementIds.has(p.id) && p.groupId);
+      html = [
+        ctxItem('remove', '🗑 보드에서 제거'),
+        '<div class="ctx-sep"></div>',
+        ctxItem('group', '그룹으로 묶기 (Ctrl+G)', n < 2),
+        ctxItem('ungroup', '그룹 해제', !hasGroup),
+        '<div class="ctx-sep"></div>',
+        ctxItem('align-left', '⇤ 왼쪽 정렬', n < 2),
+        ctxItem('align-hcenter', '↔ 가로 중앙 정렬', n < 2),
+        ctxItem('align-right', '⇥ 오른쪽 정렬', n < 2),
+        ctxItem('align-top', '⤒ 위쪽 정렬', n < 2),
+        ctxItem('align-vcenter', '↕ 세로 중앙 정렬', n < 2),
+        ctxItem('align-bottom', '⤓ 아래쪽 정렬', n < 2),
+        ctxItem('match-size', '⛶ 크기 맞춤', n < 2),
+      ].join('');
+    } else {
+      html = [
+        ctxItem('add-note', '+ 메모 추가'),
+        ctxItem('add-ref', '+ 레퍼런스 추가'),
+        '<div class="ctx-sep"></div>',
+        ctxItem('grid-snap', (boardGridSnap ? '✓ ' : '') + '격자 스냅'),
+        ctxItem('capture', '📷 이미지로 저장'),
+      ].join('');
+    }
+    menu.innerHTML = html;
+    menu.style.left = clientX + 'px';
+    menu.style.top = clientY + 'px';
+    menu.classList.add('open');
+    // 화면(또는 PiP 창) 밖으로 나가지 않게 위치 보정.
+    const view = boardDoc().defaultView;
+    const menuRect = menu.getBoundingClientRect();
+    if(menuRect.right > view.innerWidth) menu.style.left = Math.max(4, view.innerWidth - menuRect.width - 4) + 'px';
+    if(menuRect.bottom > view.innerHeight) menu.style.top = Math.max(4, view.innerHeight - menuRect.height - 4) + 'px';
+    menu.querySelectorAll('[data-ctx-action]').forEach(el => {
+      if(el.classList.contains('disabled')) return;
+      el.addEventListener('click', () => {
+        handleBoardContextAction(el.dataset.ctxAction);
+        closeBoardContextMenu();
+      });
+    });
+  }
+
+  function handleBoardContextAction(action){
+    const pos = boardContextMenuState;
+    switch(action){
+      case 'remove': removeSelectedPlacements(); break;
+      case 'group': groupSelectedPlacements(); break;
+      case 'ungroup': ungroupSelectedPlacements(); break;
+      case 'align-left': alignSelectedPlacements('left'); break;
+      case 'align-hcenter': alignSelectedPlacements('hcenter'); break;
+      case 'align-right': alignSelectedPlacements('right'); break;
+      case 'align-top': alignSelectedPlacements('top'); break;
+      case 'align-vcenter': alignSelectedPlacements('vcenter'); break;
+      case 'align-bottom': alignSelectedPlacements('bottom'); break;
+      case 'match-size': matchSizeSelectedPlacements(); break;
+      case 'add-note': addNoteToBoard(pos ? pos.x : undefined, pos ? pos.y : undefined); break;
+      case 'add-ref': toggleBoardPicker(); break;
+      case 'grid-snap': toggleBoardGridSnap(); break;
+      case 'capture': captureBoardAsImage(); break;
+    }
+  }
+
   // 빈 캔버스를 드래그하면 사각형을 그려서 겹치는 카드들을 한번에 선택한다(마퀴 선택).
   // Shift를 누른 채 시작하면 기존 선택에 더한다.
   function startBoardMarquee(e){
     if(e.button !== 0) return;
     if(e.target.closest('[data-board-card]')) return;
+    closeBoardContextMenu();
     const canvas = $b('boardCanvas');
     const rect = canvas.getBoundingClientRect();
     const startX = (e.clientX - rect.left) / boardZoom;
@@ -2064,14 +2196,24 @@
   }
 
   // ---------- board notes (sticky-note placements) ----------
-  function addNoteToBoard(){
+  // atX/atY(캔버스 좌표)가 주어지면 그 지점을 중심으로 메모를 놓는다(우클릭 메뉴용).
+  // 없으면 기존처럼 카스케이드 배치(+메모 추가 버튼용).
+  function addNoteToBoard(atX, atY){
     if(!activeSceneId) return;
-    const count = boardPlacements.filter(p => p.sceneId === activeSceneId).length;
-    const cascade = (count % 8) * 24;
+    const NOTE_W = 200, NOTE_H = 150;
+    let x, y;
+    if(typeof atX === 'number' && typeof atY === 'number'){
+      x = Math.max(0, Math.round(atX - NOTE_W / 2));
+      y = Math.max(0, Math.round(atY - NOTE_H / 2));
+    } else {
+      const count = boardPlacements.filter(p => p.sceneId === activeSceneId).length;
+      const cascade = (count % 8) * 24;
+      x = 24 + cascade; y = 24 + cascade;
+    }
     const id = uid('bp');
     boardPlacements.push({
       id, sceneId: activeSceneId, type: 'note',
-      x: 24 + cascade, y: 24 + cascade, w: 200, h: 150, z: maxBoardZ() + 1, text: ''
+      x, y, w: NOTE_W, h: NOTE_H, z: maxBoardZ() + 1, text: ''
     });
     renderBoard();
     renderSceneBar();
@@ -3149,6 +3291,8 @@
   document.addEventListener('click', (e) => {
     const picker = $('boardPicker');
     if(picker.classList.contains('open') && !picker.contains(e.target) && e.target.id !== 'btnBoardAdd') hideBoardPicker();
+    const ctxMenu = $('boardContextMenu');
+    if(ctxMenu && ctxMenu.classList.contains('open') && !ctxMenu.contains(e.target)) closeBoardContextMenu();
   });
   $('btnBoardAddNote').addEventListener('click', addNoteToBoard);
   $('btnBoardCapture').addEventListener('click', captureBoardAsImage);
@@ -3180,6 +3324,8 @@
   });
   // 빈 캔버스를 드래그하면 마퀴 선택을 시작한다.
   $('boardCanvas').addEventListener('mousedown', startBoardMarquee);
+  // 우클릭 컨텍스트 메뉴 — 카드 위/빈 캔버스 둘 다 이 리스너 하나로 처리(contextmenu는 버블링됨).
+  $('boardCanvas').addEventListener('contextmenu', openBoardContextMenu);
 
   $('btnPreviewClose').addEventListener('click', closePreview);
   previewOverlay.addEventListener('click', (e) => { if(e.target === previewOverlay) closePreview(); });
@@ -3356,6 +3502,7 @@
     // 미리보기(확장 보기)가 무드보드 모달 위에 겹쳐 떠 있을 수 있으니, 열려있으면 보드보다 먼저 닫는다.
     if(e.key === 'Escape' && previewOverlay.classList.contains('open')){ closePreview(); return; }
     if(e.key === 'Escape' && boardOverlay.classList.contains('open')){
+      if(boardContextMenuState){ closeBoardContextMenu(); return; }
       if(selectedPlacementIds.size > 0){ clearBoardSelection(); return; }
       closeBoard();
       return;
