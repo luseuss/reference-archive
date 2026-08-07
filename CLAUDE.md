@@ -74,17 +74,34 @@ Tauri로 Windows exe도 한 번 만들어봤지만(독립 실행 파일 + NSIS �
 ## 작업 워크플로우 (매번 이렇게 진행)
 1. `main`에서 새 브랜치 생성
 2. `app.html`에 기능 구현
-3. 실제/근사 브라우저 환경에서 꼼꼼히 테스트
+3. 실제/근사 브라우저 환경에서 꼼꼼히 테스트 — 이 환경은 File System Access 저장이나 Document
+   PiP의 실제 사용자 제스처를 지원하지 않는 샌드박스라, PowerShell `System.Net.HttpListener`로
+   임시 로컬 서버를 띄우고(`run_in_background: true`), `mcp__Claude_Browser__preview_start`를
+   작업 디렉터리 루트의 `.claude/launch.json`(예: `E:\code\.claude\launch.json`)에
+   `{"url": "http://localhost:PORT", "port": PORT}`로 연결해서 테스트. 테스트 끝나면 서버
+   프로세스 반드시 종료하고, 테스트용 `launch.json`은 커밋하지 말 것(레포용이 아님).
 4. 상세한 커밋 메시지로 커밋 → push
-5. `gh pr create`로 Summary + Test plan 포함해 PR 오픈
+5. `gh pr create`로 Summary + Test plan 포함해 PR 오픈 (PiP 관련 기능은 실제 사용자 제스처가
+   필요해 자동화로 검증 불가능하다는 점을 본문에 명시하고, 폴백 모달 경로로 검증)
 6. **사용자의 명시적 "병합해줘" 전까지 병합하지 않고 대기**
-7. 병합 후 로컬 `main` 동기화(`git checkout main && git pull`)
-8. 다음 계획 항목으로 이동
+7. 병합 후 로컬 `main` 동기화(`git checkout main && git pull origin main`)
+8. **이 `CLAUDE.md`도 이번 PR 내용으로 갱신 → 커밋 → push**
+9. 다음 계획 항목으로 이동
 
 ## 남은 작업 (사용자가 승인한 순서: 0 → 2 → 1 → 3-4 → 3-3 → 3-1 → 3-2)
 아직 시작 안 함:
 - **3-2. 정렬/분배 툴바**: 2개 이상 선택 시 나타나는 툴바 — 좌/우/상/하 정렬, 가로/세로 중앙 정렬,
   크기 맞춤(match size). 3-1에서 이미 만든 `boardSelectionBar`/`selectedPlacementIds`를 그대로
-  확장해서 붙이면 됨.
+  확장해서 붙이면 됨. 구현 힌트:
+  - 정렬 기준은 "선택된 카드들 전체의 바운딩 박스"로 잡는 게 무난.
+    - 왼쪽 정렬: 모든 선택 카드의 `x`를 `Math.min(...selected.map(p=>p.x))`로 맞춤 (오른쪽/위/
+      아래도 동일한 방식, 오른쪽은 `x+w`의 `Math.max`, 아래는 `y+h`의 `Math.max` 기준)
+    - 가로/세로 중앙 정렬: 바운딩 박스의 중심선에 각 카드의 중심을 맞춤
+    - 크기 맞춤(match size): 기준 카드(마지막 또는 첫 선택) 하나의 w/h로 나머지를 맞춤 — 어떤
+      카드를 기준으로 할지는 상식적으로 정하거나 필요하면 사용자와 확인
+  - 정적 모달(`#boardOverlay`)과 PiP 창(`ensureBoardWindow`의 템플릿 문자열) 양쪽에 버튼 마크업
+    추가 + 이벤트 wiring도 정적 하단 블록과 `wirePipBoardControls(win)` 양쪽에 다 붙여야 함
+    (3-1~3-3 전부 이 패턴 — 하나만 하면 PiP 안에서 안 먹음)
+  - 정렬/크기 변경 후 `afterDataChange()` + `renderBoard()` 재렌더 잊지 말 것
 
 이 항목까지 끝나면 사용자가 요청한 전체 기능 스펙(0~3)이 완료됨.
