@@ -83,6 +83,7 @@
   .btn-ghost:hover{ background:var(--accent-soft); }
   .btn-icon{ background:var(--surface); color:var(--text); border:1px solid var(--border); padding:9px 11px; }
   .btn-icon:hover{ background:var(--accent-soft); }
+  .btn-icon.active{ background:var(--accent); color:var(--accent-text); border-color:var(--accent); }
   .btn-danger-ghost{ background:var(--surface); color:var(--danger); border:1px solid var(--border); }
   .btn-danger-ghost:hover{ background:var(--danger-soft); }
   input[type=file]{ display:none; }
@@ -289,6 +290,9 @@
     position:absolute; border-radius:8px; overflow:hidden; box-shadow:var(--shadow);
     border:1px solid var(--border); background:var(--surface); cursor:move; user-select:none;
   }
+  .board-guide{ position:absolute; background:var(--accent); z-index:999; pointer-events:none; }
+  .board-guide.v{ top:0; bottom:0; width:1px; }
+  .board-guide.h{ left:0; right:0; height:1px; }
   .board-card img{ width:100%; height:100%; object-fit:contain; display:block; pointer-events:none; }
   .board-card .board-remove{
     position:absolute; top:4px; right:4px; width:20px; height:20px; border-radius:50%; border:none;
@@ -623,6 +627,7 @@
           <button type="button" class="btn-icon" id="btnBoardZoomIn" title="확대">+</button>
           <button type="button" class="btn-ghost" id="btnBoardZoomReset" title="100%로">리셋</button>
         </div>
+        <button type="button" class="btn-icon" id="btnBoardGridSnap" title="격자 스냅 켜기/끄기">▦</button>
         <button type="button" class="btn-ghost" id="btnBoardAddNote">+ 메모 추가</button>
         <button type="button" class="btn-ghost" id="btnBoardAdd">+ 레퍼런스 추가</button>
         <div class="board-picker" id="boardPicker"></div>
@@ -701,6 +706,7 @@
   let editingSceneId = null;
   let activeSceneId = null;
   let boardZoom = 1;
+  let boardGridSnap = false;
   let noteSaveTimer = null;
   let editingId = null;
   let currentType = 'image';
@@ -1372,6 +1378,7 @@
             <button type="button" class="btn-icon" id="btnBoardZoomIn" title="확대">+</button>
             <button type="button" class="btn-ghost" id="btnBoardZoomReset" title="100%로">리셋</button>
           </div>
+          <button type="button" class="btn-icon" id="btnBoardGridSnap" title="격자 스냅 켜기/끄기">▦</button>
           <button type="button" class="btn-ghost" id="btnBoardAddNote">+ 메모 추가</button>
           <button type="button" class="btn-ghost" id="btnBoardAdd">+ 레퍼런스 추가</button>
           <div class="board-picker" id="boardPicker"></div>
@@ -1431,6 +1438,7 @@
     d.getElementById('btnBoardZoomIn').addEventListener('click', () => setBoardZoom(boardZoom + BOARD_ZOOM_STEP));
     d.getElementById('btnBoardZoomOut').addEventListener('click', () => setBoardZoom(boardZoom - BOARD_ZOOM_STEP));
     d.getElementById('btnBoardZoomReset').addEventListener('click', () => setBoardZoom(1));
+    d.getElementById('btnBoardGridSnap').addEventListener('click', toggleBoardGridSnap);
     d.getElementById('btnBoardAddNote').addEventListener('click', addNoteToBoard);
     d.getElementById('btnBoardAdd').addEventListener('click', (e) => { e.stopPropagation(); toggleBoardPicker(); });
     d.getElementById('btnBoardCapture').addEventListener('click', captureBoardAsImage);
@@ -1501,6 +1509,12 @@
     $b('boardZoomLabel').textContent = Math.round(boardZoom * 100) + '%';
   }
 
+  function toggleBoardGridSnap(){
+    boardGridSnap = !boardGridSnap;
+    const btn = $b('btnBoardGridSnap');
+    if(btn) btn.classList.toggle('active', boardGridSnap);
+  }
+
   function renderBoard(){
     const canvas = $b('boardCanvas');
     const placements = boardPlacements.filter(p => p.sceneId === activeSceneId);
@@ -1556,6 +1570,55 @@
     });
   }
 
+  // ---------- snapping: 다른 카드 가장자리(항상 켜짐) + 격자(옵션) ----------
+  const BOARD_SNAP_THRESHOLD = 8;
+  const BOARD_GRID_SIZE = 20;
+
+  // 지금 씬에서 드래그/리사이즈 중인 카드를 제외한 나머지 카드들의 가장자리·중심선을
+  // 스냅 후보로 모은다. x축(left/center/right)과 y축(top/center/bottom) 각각 따로 모은다.
+  function boardSnapCandidates(excludeId){
+    const xs = [], ys = [];
+    boardPlacements.filter(p => p.sceneId === activeSceneId && p.id !== excludeId).forEach(p => {
+      xs.push(p.x, p.x + p.w / 2, p.x + p.w);
+      ys.push(p.y, p.y + p.h / 2, p.y + p.h);
+    });
+    return { xs, ys };
+  }
+
+  // points(비교할 카드의 기준점들) 중 candidates와 가장 가깝고 임계값 이내인 것을 찾아
+  // 그만큼의 보정값(offset)과, 가이드 선을 그릴 위치를 반환한다. 카드끼리 맞는 게 없으면
+  // (격자 스냅이 켜져 있을 때만) gridBase를 격자에 반올림한 보정값을 대신 준다.
+  function findSnapOffset(points, candidates, gridBase){
+    let bestOffset = null, bestDist = BOARD_SNAP_THRESHOLD, guidePos = null;
+    points.forEach(pt => {
+      candidates.forEach(c => {
+        const d = Math.abs(c - pt);
+        if(d < bestDist){ bestDist = d; bestOffset = c - pt; guidePos = c; }
+      });
+    });
+    if(bestOffset !== null) return { offset: bestOffset, guidePos };
+    if(boardGridSnap){
+      const snapped = Math.round(gridBase / BOARD_GRID_SIZE) * BOARD_GRID_SIZE;
+      if(Math.abs(snapped - gridBase) <= BOARD_SNAP_THRESHOLD) return { offset: snapped - gridBase, guidePos: null };
+    }
+    return { offset: 0, guidePos: null };
+  }
+
+  function clearBoardGuides(){
+    const canvas = $b('boardCanvas');
+    if(canvas) canvas.querySelectorAll('.board-guide').forEach(g => g.remove());
+  }
+
+  function showBoardGuide(axis, pos){
+    const canvas = $b('boardCanvas');
+    if(!canvas) return;
+    const guide = boardDoc().createElement('div');
+    guide.className = `board-guide ${axis === 'x' ? 'v' : 'h'}`;
+    if(axis === 'x') guide.style.left = pos + 'px';
+    else guide.style.top = pos + 'px';
+    canvas.appendChild(guide);
+  }
+
   // 드래그·리사이즈 중 mousemove/mouseup은 "지금 보드가 실제로 그려지고 있는 문서"
   // (PiP 창이면 그 창의 document, 폴백이면 메인 document)에 붙여야 한다. 메인 document에
   // 고정해서 붙이면, PiP 창 안에서 드래그할 때 그 이벤트가 메인 페이지로는 전달되지 않아
@@ -1582,14 +1645,27 @@
     if(Math.abs(dx) > BOARD_CLICK_THRESHOLD || Math.abs(dy) > BOARD_CLICK_THRESHOLD) dragState.moved = true;
     // 캔버스가 scale(boardZoom)로 축소/확대돼 있으므로, 화면 픽셀 이동량을 배율로 나눠야
     // 캔버스 좌표(=줌 100% 기준 좌표)와 마우스 이동이 정확히 같은 비율로 움직인다.
-    p.x = Math.max(0, dragState.origX + dx / boardZoom);
-    p.y = Math.max(0, dragState.origY + dy / boardZoom);
+    let x = Math.max(0, dragState.origX + dx / boardZoom);
+    let y = Math.max(0, dragState.origY + dy / boardZoom);
+
+    const { xs, ys } = boardSnapCandidates(p.id);
+    const snapX = findSnapOffset([x, x + p.w / 2, x + p.w], xs, x);
+    const snapY = findSnapOffset([y, y + p.h / 2, y + p.h], ys, y);
+    x = Math.max(0, x + snapX.offset);
+    y = Math.max(0, y + snapY.offset);
+
+    clearBoardGuides();
+    if(snapX.guidePos !== null) showBoardGuide('x', snapX.guidePos);
+    if(snapY.guidePos !== null) showBoardGuide('y', snapY.guidePos);
+
+    p.x = x; p.y = y;
     const card = $b('boardCanvas').querySelector(`[data-board-card="${dragState.id}"]`);
     if(card){ card.style.left = p.x + 'px'; card.style.top = p.y + 'px'; }
   }
   function onDragEnd(){
     boardDoc().removeEventListener('mousemove', onDragMove);
     boardDoc().removeEventListener('mouseup', onDragEnd);
+    clearBoardGuides();
     if(dragState){
       const wasClick = !dragState.moved;
       const placementId = dragState.id;
@@ -1627,14 +1703,29 @@
     if(!resizeState) return;
     const p = boardPlacements.find(x => x.id === resizeState.id);
     if(!p) return;
-    p.w = Math.max(MIN_BOARD_SIZE, resizeState.origW + (e.clientX - resizeState.startX) / boardZoom);
-    p.h = Math.max(MIN_BOARD_SIZE, resizeState.origH + (e.clientY - resizeState.startY) / boardZoom);
+    let w = Math.max(MIN_BOARD_SIZE, resizeState.origW + (e.clientX - resizeState.startX) / boardZoom);
+    let h = Math.max(MIN_BOARD_SIZE, resizeState.origH + (e.clientY - resizeState.startY) / boardZoom);
+
+    // 왼쪽·위쪽은 고정이므로 오른쪽/아래쪽 가장자리만 다른 카드 가장자리·격자에 스냅한다.
+    const { xs, ys } = boardSnapCandidates(p.id);
+    const rightEdge = p.x + w, bottomEdge = p.y + h;
+    const snapX = findSnapOffset([rightEdge], xs, rightEdge);
+    const snapY = findSnapOffset([bottomEdge], ys, bottomEdge);
+    w = Math.max(MIN_BOARD_SIZE, w + snapX.offset);
+    h = Math.max(MIN_BOARD_SIZE, h + snapY.offset);
+
+    clearBoardGuides();
+    if(snapX.guidePos !== null) showBoardGuide('x', snapX.guidePos);
+    if(snapY.guidePos !== null) showBoardGuide('y', snapY.guidePos);
+
+    p.w = w; p.h = h;
     const card = $b('boardCanvas').querySelector(`[data-board-card="${resizeState.id}"]`);
     if(card){ card.style.width = p.w + 'px'; card.style.height = p.h + 'px'; }
   }
   function onResizeEnd(){
     boardDoc().removeEventListener('mousemove', onResizeMove);
     boardDoc().removeEventListener('mouseup', onResizeEnd);
+    clearBoardGuides();
     if(resizeState){ resizeState = null; afterDataChange(); }
   }
 
@@ -2793,6 +2884,7 @@
   $('btnBoardZoomIn').addEventListener('click', () => setBoardZoom(boardZoom + BOARD_ZOOM_STEP));
   $('btnBoardZoomOut').addEventListener('click', () => setBoardZoom(boardZoom - BOARD_ZOOM_STEP));
   $('btnBoardZoomReset').addEventListener('click', () => setBoardZoom(1));
+  $('btnBoardGridSnap').addEventListener('click', toggleBoardGridSnap);
   $('boardCanvasWrap').addEventListener('wheel', (e) => {
     if(!(e.ctrlKey || e.metaKey)) return; // Ctrl+휠 또는 트랙패드 핀치(둘 다 ctrlKey가 true로 옴)
     e.preventDefault();
