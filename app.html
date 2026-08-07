@@ -292,6 +292,10 @@
   .board-selection-bar.open{ display:flex; }
   .board-selection-bar .btn-ghost{ padding:5px 10px; font-size:12px; }
   .board-selection-bar .btn-ghost:disabled{ opacity:.4; cursor:not-allowed; }
+  .board-selection-divider{ width:1px; align-self:stretch; background:var(--accent); opacity:.5; }
+  .board-align-group{ display:flex; align-items:center; gap:4px; }
+  .board-align-group .btn-icon{ padding:5px 8px; font-size:12px; line-height:1; }
+  .board-align-group .btn-icon:disabled{ opacity:.4; cursor:not-allowed; }
   .board-canvas-wrap{ flex:1; overflow:auto; position:relative; background:var(--bg); }
   .board-canvas{ position:relative; width:2400px; height:1600px; transform-origin:0 0; }
   .board-card{
@@ -654,6 +658,16 @@
       <span id="boardSelectionCount"></span>
       <button type="button" class="btn-ghost" id="btnBoardGroup">그룹으로 묶기 (Ctrl+G)</button>
       <button type="button" class="btn-ghost" id="btnBoardUngroup">그룹 해제</button>
+      <span class="board-selection-divider"></span>
+      <div class="board-align-group" id="boardAlignGroup">
+        <button type="button" class="btn-icon" id="btnAlignLeft" title="왼쪽 정렬">⇤</button>
+        <button type="button" class="btn-icon" id="btnAlignHCenter" title="가로 중앙 정렬">↔</button>
+        <button type="button" class="btn-icon" id="btnAlignRight" title="오른쪽 정렬">⇥</button>
+        <button type="button" class="btn-icon" id="btnAlignTop" title="위쪽 정렬">⤒</button>
+        <button type="button" class="btn-icon" id="btnAlignVCenter" title="세로 중앙 정렬">↕</button>
+        <button type="button" class="btn-icon" id="btnAlignBottom" title="아래쪽 정렬">⤓</button>
+        <button type="button" class="btn-icon" id="btnBoardMatchSize" title="크기 맞춤 (마지막에 선택한 카드 기준)">⛶</button>
+      </div>
     </div>
     <div class="board-canvas-wrap" id="boardCanvasWrap">
       <div class="board-canvas" id="boardCanvas"></div>
@@ -1411,6 +1425,16 @@
         <span id="boardSelectionCount"></span>
         <button type="button" class="btn-ghost" id="btnBoardGroup">그룹으로 묶기 (Ctrl+G)</button>
         <button type="button" class="btn-ghost" id="btnBoardUngroup">그룹 해제</button>
+        <span class="board-selection-divider"></span>
+        <div class="board-align-group" id="boardAlignGroup">
+          <button type="button" class="btn-icon" id="btnAlignLeft" title="왼쪽 정렬">⇤</button>
+          <button type="button" class="btn-icon" id="btnAlignHCenter" title="가로 중앙 정렬">↔</button>
+          <button type="button" class="btn-icon" id="btnAlignRight" title="오른쪽 정렬">⇥</button>
+          <button type="button" class="btn-icon" id="btnAlignTop" title="위쪽 정렬">⤒</button>
+          <button type="button" class="btn-icon" id="btnAlignVCenter" title="세로 중앙 정렬">↕</button>
+          <button type="button" class="btn-icon" id="btnAlignBottom" title="아래쪽 정렬">⤓</button>
+          <button type="button" class="btn-icon" id="btnBoardMatchSize" title="크기 맞춤 (마지막에 선택한 카드 기준)">⛶</button>
+        </div>
       </div>
       <div class="board-canvas-wrap" id="boardCanvasWrap">
         <div class="board-canvas" id="boardCanvas"></div>
@@ -1470,6 +1494,13 @@
     d.getElementById('btnBoardCapture').addEventListener('click', captureBoardAsImage);
     d.getElementById('btnBoardGroup').addEventListener('click', groupSelectedPlacements);
     d.getElementById('btnBoardUngroup').addEventListener('click', ungroupSelectedPlacements);
+    d.getElementById('btnAlignLeft').addEventListener('click', () => alignSelectedPlacements('left'));
+    d.getElementById('btnAlignHCenter').addEventListener('click', () => alignSelectedPlacements('hcenter'));
+    d.getElementById('btnAlignRight').addEventListener('click', () => alignSelectedPlacements('right'));
+    d.getElementById('btnAlignTop').addEventListener('click', () => alignSelectedPlacements('top'));
+    d.getElementById('btnAlignVCenter').addEventListener('click', () => alignSelectedPlacements('vcenter'));
+    d.getElementById('btnAlignBottom').addEventListener('click', () => alignSelectedPlacements('bottom'));
+    d.getElementById('btnBoardMatchSize').addEventListener('click', matchSizeSelectedPlacements);
     d.addEventListener('click', (e) => {
       const picker = $b('boardPicker');
       if(picker && picker.classList.contains('open') && !picker.contains(e.target) && e.target.id !== 'btnBoardAdd') hideBoardPicker();
@@ -1673,6 +1704,10 @@
     if(groupBtn) groupBtn.disabled = n < 2;
     const ungroupBtn = $b('btnBoardUngroup');
     if(ungroupBtn) ungroupBtn.disabled = !hasGroup;
+    ['btnAlignLeft', 'btnAlignHCenter', 'btnAlignRight', 'btnAlignTop', 'btnAlignVCenter', 'btnAlignBottom', 'btnBoardMatchSize'].forEach(id => {
+      const btn = $b(id);
+      if(btn) btn.disabled = n < 2;
+    });
   }
 
   function groupSelectedPlacements(){
@@ -1687,6 +1722,43 @@
     boardPlacements.forEach(p => { if(selectedPlacementIds.has(p.id) && p.groupId) groupIds.add(p.groupId); });
     if(groupIds.size === 0) return;
     boardPlacements.forEach(p => { if(groupIds.has(p.groupId)) delete p.groupId; });
+    renderBoard();
+    afterDataChange();
+  }
+
+  // ---------- align & distribute (3-2) ----------
+  // 선택된 카드 전체를 감싸는 바운딩 박스를 기준으로 각 카드를 왼쪽/가운데/오른쪽(또는
+  // 위/가운데/아래)에 맞춘다. 그룹 여부와 무관하게 선택된 카드 각각을 독립적으로 옮긴다 —
+  // 디자인 툴에서의 일반적인 정렬 동작과 동일.
+  function alignSelectedPlacements(mode){
+    const selected = boardPlacements.filter(p => selectedPlacementIds.has(p.id));
+    if(selected.length < 2) return;
+    const minX = Math.min(...selected.map(p => p.x));
+    const maxX = Math.max(...selected.map(p => p.x + p.w));
+    const minY = Math.min(...selected.map(p => p.y));
+    const maxY = Math.max(...selected.map(p => p.y + p.h));
+    selected.forEach(p => {
+      if(mode === 'left') p.x = minX;
+      else if(mode === 'right') p.x = maxX - p.w;
+      else if(mode === 'hcenter') p.x = minX + (maxX - minX - p.w) / 2;
+      else if(mode === 'top') p.y = minY;
+      else if(mode === 'bottom') p.y = maxY - p.h;
+      else if(mode === 'vcenter') p.y = minY + (maxY - minY - p.h) / 2;
+    });
+    renderBoard();
+    afterDataChange();
+  }
+
+  // 선택 중 "마지막에 선택에 추가된" 카드(Set은 삽입 순서를 보존한다)를 기준으로 나머지
+  // 선택된 카드들의 가로/세로 크기를 맞춘다. 위치(x, y)는 건드리지 않는다.
+  function matchSizeSelectedPlacements(){
+    if(selectedPlacementIds.size < 2) return;
+    const ids = [...selectedPlacementIds];
+    const ref = boardPlacements.find(p => p.id === ids[ids.length - 1]);
+    if(!ref) return;
+    boardPlacements.forEach(p => {
+      if(selectedPlacementIds.has(p.id) && p.id !== ref.id){ p.w = ref.w; p.h = ref.h; }
+    });
     renderBoard();
     afterDataChange();
   }
@@ -3087,6 +3159,13 @@
   $('btnBoardGridSnap').addEventListener('click', toggleBoardGridSnap);
   $('btnBoardGroup').addEventListener('click', groupSelectedPlacements);
   $('btnBoardUngroup').addEventListener('click', ungroupSelectedPlacements);
+  $('btnAlignLeft').addEventListener('click', () => alignSelectedPlacements('left'));
+  $('btnAlignHCenter').addEventListener('click', () => alignSelectedPlacements('hcenter'));
+  $('btnAlignRight').addEventListener('click', () => alignSelectedPlacements('right'));
+  $('btnAlignTop').addEventListener('click', () => alignSelectedPlacements('top'));
+  $('btnAlignVCenter').addEventListener('click', () => alignSelectedPlacements('vcenter'));
+  $('btnAlignBottom').addEventListener('click', () => alignSelectedPlacements('bottom'));
+  $('btnBoardMatchSize').addEventListener('click', matchSizeSelectedPlacements);
   $('boardCanvasWrap').addEventListener('wheel', (e) => {
     if(!(e.ctrlKey || e.metaKey)) return; // Ctrl+휠 또는 트랙패드 핀치(둘 다 ctrlKey가 true로 옴)
     e.preventDefault();
