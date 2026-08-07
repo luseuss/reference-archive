@@ -441,6 +441,7 @@
       <option value="new">최신순</option>
       <option value="old">오래된순</option>
       <option value="title">이름순</option>
+      <option value="similar">유사한 것끼리</option>
     </select>
     <button type="button" class="chip" id="favOnlyToggle">⭐ 즐겨찾기</button>
     <button type="button" class="btn-ghost" id="btnBulkToggle">☑ 선택</button>
@@ -1845,11 +1846,25 @@
     return true;
   }
 
+  // "유사한 것끼리": 완전한 클러스터링 대신, 목록에서 가장 최근에 추가된 항목을 기준으로
+  // 삼아 그 항목과 similarityScore가 높은 순으로 나머지를 정렬하는 단순한 방식.
+  // 기준 항목 자체는 맨 앞에 고정된다.
+  function sortBySimilarity(list){
+    if(list.length === 0) return list;
+    const anchor = list.reduce((latest, i) => i.addedAt > latest.addedAt ? i : latest, list[0]);
+    return [...list].sort((a, b) => {
+      if(a.id === anchor.id) return -1;
+      if(b.id === anchor.id) return 1;
+      return similarityScore(anchor, b) - similarityScore(anchor, a);
+    });
+  }
+
   function sortByMode(list, mode){
     const copy = [...list];
     if(mode === 'new') copy.sort((a,b) => b.addedAt.localeCompare(a.addedAt));
     else if(mode === 'old') copy.sort((a,b) => a.addedAt.localeCompare(b.addedAt));
     else if(mode === 'title') copy.sort((a,b) => a.title.localeCompare(b.title, 'ko'));
+    else if(mode === 'similar') return sortBySimilarity(copy);
     return copy;
   }
 
