@@ -59,7 +59,18 @@ Tauri로 Windows exe도 한 번 만들어봤지만(독립 실행 파일 + NSIS �
   드래그(`dragSetFor()`), 선택 시 나타나는 선택 바, Esc는 선택 해제 후 보드 닫기 순서로 동작.
   부수적으로 `parseAndValidate()`가 `groupId`를 파일 재로드 때 조용히 지우던 버그도 같이 수정.
 
-로컬 `main`은 위 PR들 병합 후 `896e0fd`까지 동기화 확인됨.
+**PR #18 (3-2. 정렬/분배 툴바, 마지막 남은 항목 — 브랜치 `board-align-distribute`, 아직 병합 전)**:
+선택 바(`boardSelectionBar`)에 좌/우/상/하/가로중앙/세로중앙 정렬 + 크기 맞춤 아이콘 버튼 7개
+추가. `alignSelectedPlacements(mode)`는 선택된 카드 전체의 바운딩 박스를 기준으로 각 카드를
+독립적으로 옮김(그룹 여부 무시 — 디자인 툴의 일반적인 정렬 동작과 동일). `matchSizeSelectedPlacements()`는
+"마지막에 선택에 추가된" 카드(JS `Set`이 삽입 순서를 보존하는 걸 이용)를 기준으로 나머지 카드의
+w/h만 맞추고 위치는 그대로 둠. 둘 다 `n < 2`일 때 버튼 비활성화. 정적 모달 + PiP 템플릿 양쪽에
+마크업/wiring 다 붙임(3-1~3-3과 동일 패턴). 이 sandbox 환경엔 Node가 없어서 문법 검증은 못 했고,
+로컬 PowerShell `HttpListener` + `mcp__Claude_Browser__javascript_tool`로 synthetic mousedown/click
+이벤트를 실제 앱 코드에 디스패치해서 정렬 6종 + 크기맞춤 + 비활성화 가드까지 좌표 계산으로
+검증 완료(Document PiP는 이 환경에서 항상 실패해서 기존 모달 폴백 경로로 테스트함 — 예상된 동작).
+
+로컬 `main`은 PR #17까지 `896e0fd`로 동기화 확인됨. PR #18은 아직 오픈 전/병합 전.
 
 ## 중요한 결정/맥락 (git 로그엔 안 보이는 부분)
 - Windows Smart App Control이 Tauri/Rust 빌드를 막은 적 있음(사용자가 직접 설정 껐음 — 보안 설정은
@@ -89,19 +100,6 @@ Tauri로 Windows exe도 한 번 만들어봤지만(독립 실행 파일 + NSIS �
 9. 다음 계획 항목으로 이동
 
 ## 남은 작업 (사용자가 승인한 순서: 0 → 2 → 1 → 3-4 → 3-3 → 3-1 → 3-2)
-아직 시작 안 함:
-- **3-2. 정렬/분배 툴바**: 2개 이상 선택 시 나타나는 툴바 — 좌/우/상/하 정렬, 가로/세로 중앙 정렬,
-  크기 맞춤(match size). 3-1에서 이미 만든 `boardSelectionBar`/`selectedPlacementIds`를 그대로
-  확장해서 붙이면 됨. 구현 힌트:
-  - 정렬 기준은 "선택된 카드들 전체의 바운딩 박스"로 잡는 게 무난.
-    - 왼쪽 정렬: 모든 선택 카드의 `x`를 `Math.min(...selected.map(p=>p.x))`로 맞춤 (오른쪽/위/
-      아래도 동일한 방식, 오른쪽은 `x+w`의 `Math.max`, 아래는 `y+h`의 `Math.max` 기준)
-    - 가로/세로 중앙 정렬: 바운딩 박스의 중심선에 각 카드의 중심을 맞춤
-    - 크기 맞춤(match size): 기준 카드(마지막 또는 첫 선택) 하나의 w/h로 나머지를 맞춤 — 어떤
-      카드를 기준으로 할지는 상식적으로 정하거나 필요하면 사용자와 확인
-  - 정적 모달(`#boardOverlay`)과 PiP 창(`ensureBoardWindow`의 템플릿 문자열) 양쪽에 버튼 마크업
-    추가 + 이벤트 wiring도 정적 하단 블록과 `wirePipBoardControls(win)` 양쪽에 다 붙여야 함
-    (3-1~3-3 전부 이 패턴 — 하나만 하면 PiP 안에서 안 먹음)
-  - 정렬/크기 변경 후 `afterDataChange()` + `renderBoard()` 재렌더 잊지 말 것
-
-이 항목까지 끝나면 사용자가 요청한 전체 기능 스펙(0~3)이 완료됨.
+**3-2까지 구현 완료(PR #18, 브랜치 `board-align-distribute`) — 사용자의 "병합해줘" 대기 중.**
+병합되고 나면 사용자가 요청한 전체 기능 스펙(0~3)이 전부 끝나는 것 — 다음 세션에서 PR #18이
+병합돼 있으면 이 파일의 "남은 작업" 섹션 자체를 지우고 필요하면 새로운 작업으로 갱신할 것.
