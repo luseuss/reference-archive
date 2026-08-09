@@ -257,6 +257,9 @@
     align-items:flex-start; justify-content:center; padding:40px 16px; overflow-y:auto; z-index:50;
   }
   .overlay.open{ display:flex; }
+  /* 레퍼런스 추가 모달 위에 폴더/카테고리 새로 만들기 모달이 겹쳐 뜰 수 있어(3번 기능),
+     항상 그 위에서 보이도록 z-index를 명시적으로 더 높여둔다. */
+  #folderOverlay, #categoryOverlay{ z-index:60; }
   .modal{
     background:var(--surface); border-radius:16px; width:100%; max-width:480px; padding:22px;
     box-shadow:0 20px 60px rgba(0,0,0,.3); border:1px solid var(--border);
@@ -274,6 +277,9 @@
   .field textarea{ resize:vertical; min-height:56px; }
   .field-hint{ font-size:11px; color:var(--text-dim); margin-top:4px; }
   .project-select{ display:flex; gap:6px; flex-wrap:wrap; }
+  .select-with-add{ display:flex; gap:6px; align-items:stretch; }
+  .select-with-add select{ flex:1; min-width:0; }
+  .select-with-add .btn-icon{ flex:0 0 auto; padding:0 12px; }
 
   /* mood board (scene) */
   .board-modal{ max-width:96vw; width:96vw; height:90vh; padding:0; display:flex; flex-direction:column; }
@@ -307,8 +313,16 @@
   }
   .board-context-menu .ctx-item:hover{ background:var(--accent-soft); }
   .board-context-menu .ctx-item.disabled{ opacity:.4; cursor:not-allowed; pointer-events:none; }
+  .board-context-menu .ctx-item-select{ cursor:default; justify-content:space-between; }
+  .board-context-menu .ctx-item-select:hover{ background:none; }
+  .board-context-menu .ctx-item-select select{
+    font:inherit; font-size:12px; padding:2px 4px; border-radius:6px; border:1px solid var(--border);
+    background:var(--surface); color:var(--text);
+  }
   .board-context-menu .ctx-sep{ height:1px; background:var(--border); margin:5px 2px; }
   .board-canvas-wrap{ flex:1; overflow:auto; position:relative; background:var(--bg); }
+  .board-canvas-wrap.space-pan{ cursor:grab; }
+  .board-canvas-wrap.panning{ cursor:grabbing; }
   .board-canvas{ position:relative; width:2400px; height:1600px; transform-origin:0 0; }
   .board-card{
     position:absolute; border-radius:8px; overflow:hidden; box-shadow:var(--shadow);
@@ -554,13 +568,17 @@
     </div>
     <div class="field">
       <label>폴더</label>
-      <select id="folderSelect"></select>
-      <div class="field-hint">새 폴더는 아래 "폴더" 영역의 "+ 새 폴더"로 먼저 만들어주세요.</div>
+      <div class="select-with-add">
+        <select id="folderSelect"></select>
+        <button type="button" class="btn-icon" id="btnFolderQuickAdd" title="새 폴더 만들기">+</button>
+      </div>
     </div>
     <div class="field">
       <label>카테고리</label>
-      <select id="categorySelectModal"></select>
-      <div class="field-hint">새 카테고리는 왼쪽 메뉴의 "카테고리 생성"으로 먼저 만들어주세요.</div>
+      <div class="select-with-add">
+        <select id="categorySelectModal"></select>
+        <button type="button" class="btn-icon" id="btnCategoryQuickAdd" title="새 카테고리 만들기">+</button>
+      </div>
     </div>
     <div class="field">
       <label>프로젝트</label>
@@ -665,7 +683,7 @@
         <button type="button" class="btn-icon" id="btnBoardClose" title="닫기">✕</button>
       </div>
     </div>
-    <div class="board-hint">외부 링크 이미지는 캡처에서 빠질 수 있어요 · 카드를 캔버스로 드래그해서 추가할 수도 있어요 · 빈 공간을 드래그하거나 Shift+클릭으로 여러 개 선택할 수 있어요</div>
+    <div class="board-hint">외부 링크 이미지는 캡처에서 빠질 수 있어요 · 카드를 캔버스로 드래그해서 추가할 수도 있어요 · 빈 공간을 드래그하거나 Shift+클릭으로 여러 개 선택할 수 있어요 · 휠로 확대/축소, 스페이스바+드래그로 화면 이동</div>
     <div class="board-selection-bar" id="boardSelectionBar">
       <span id="boardSelectionCount"></span>
       <button type="button" class="btn-ghost" id="btnBoardGroup">그룹으로 묶기 (Ctrl+G)</button>
@@ -756,7 +774,11 @@
   let selectedPlacementIds = new Set();
   let marqueeState = null;
   let boardContextMenuState = null; // { kind: 'canvas'|'card', x, y } — x/y는 우클릭 시점의 캔버스 좌표(메모 배치용)
+  let boardSpaceDown = false; // 스페이스바를 누르고 있는 동안 = 빈 드래그가 마퀴 대신 화면 이동(팬)이 된다
+  let panState = null;
   let noteSaveTimer = null;
+  let folderQuickAddFromRefModal = false; // "레퍼런스 추가" 모달 안 + 버튼으로 열었을 때만 true
+  let categoryQuickAddFromRefModal = false;
   let editingId = null;
   let currentType = 'image';
   let uploadedDataUrl = null;
@@ -1100,6 +1122,7 @@
     function closeModal(){
       cfg.overlay.classList.remove('open');
       cfg.setEditingId(null);
+      if(cfg.onClose) cfg.onClose();
     }
 
     function showErr(msg){
@@ -1125,6 +1148,7 @@
         list.push(item);
         cfg.setActive(item.id);
         if(cfg.onActivate) cfg.onActivate();
+        if(cfg.onCreate) cfg.onCreate(item);
       }
       closeModal();
       afterDataChange();
@@ -1159,7 +1183,15 @@
     icon: '📁', typeLabel: '폴더', idPrefix: 'f', itemField: 'folderId',
     barId: 'folderBar', allLabel: '전체', includeNone: true, addLabel: '+ 새 폴더',
     overlay: folderOverlay, titleId: 'folderModalTitle', nameInputId: 'folderNameInput', errId: 'folderFormErr',
-    containedPhrase: '폴더에 담긴'
+    containedPhrase: '폴더에 담긴',
+    onCreate: (item) => {
+      if(!folderQuickAddFromRefModal) return;
+      folderQuickAddFromRefModal = false;
+      // 방금 만든 폴더가 선택지에 있어야 값을 지정할 수 있으므로, select를 먼저 새로 채운다.
+      folderTaxonomy.renderSelect('folderSelect');
+      $('folderSelect').value = item.id;
+    },
+    onClose: () => { folderQuickAddFromRefModal = false; }
   });
 
   const categoryTaxonomy = makeTaxonomy({
@@ -1170,7 +1202,14 @@
     barId: 'categoryFolderBar', allLabel: '카테고리', includeNone: false, addLabel: '카테고리 생성',
     overlay: categoryOverlay, titleId: 'categoryModalTitle', nameInputId: 'categoryNameInput', errId: 'categoryFormErr',
     containedPhrase: '카테고리가 지정된',
-    onActivate: () => { activePart = 'ALL'; }
+    onActivate: () => { activePart = 'ALL'; },
+    onCreate: (item) => {
+      if(!categoryQuickAddFromRefModal) return;
+      categoryQuickAddFromRefModal = false;
+      categoryTaxonomy.renderSelect('categorySelectModal');
+      $('categorySelectModal').value = item.id;
+    },
+    onClose: () => { categoryQuickAddFromRefModal = false; }
   });
 
   // ---------- projects ----------
@@ -1397,6 +1436,7 @@
   function onBoardWindowClosed(){
     boardWindow = null;
     activeSceneId = null;
+    boardSpaceDown = false;
   }
 
   async function ensureBoardWindow(scene){
@@ -1434,7 +1474,7 @@
           <button type="button" class="btn-ghost" id="btnBoardCapture">📷 이미지로 저장</button>
         </div>
       </div>
-      <div class="board-hint">외부 링크 이미지는 캡처에서 빠질 수 있어요 · 메인 화면 카드를 이 창으로 드래그해서 추가할 수도 있어요 · 빈 공간을 드래그하거나 Shift+클릭으로 여러 개 선택할 수 있어요</div>
+      <div class="board-hint">외부 링크 이미지는 캡처에서 빠질 수 있어요 · 메인 화면 카드를 이 창으로 드래그해서 추가할 수도 있어요 · 빈 공간을 드래그하거나 Shift+클릭으로 여러 개 선택할 수 있어요 · 휠로 확대/축소, 스페이스바+드래그로 화면 이동</div>
       <div class="board-selection-bar" id="boardSelectionBar">
         <span id="boardSelectionCount"></span>
         <button type="button" class="btn-ghost" id="btnBoardGroup">그룹으로 묶기 (Ctrl+G)</button>
@@ -1522,12 +1562,13 @@
       const ctxMenu = $b('boardContextMenu');
       if(ctxMenu && ctxMenu.classList.contains('open') && !ctxMenu.contains(e.target)) closeBoardContextMenu();
     });
+    // Ctrl 없이 휠만으로 줌(4번 기능) — 화면 이동은 스페이스바+드래그가 대신 맡는다.
     d.getElementById('boardCanvasWrap').addEventListener('wheel', (e) => {
-      if(!(e.ctrlKey || e.metaKey)) return;
       e.preventDefault();
       setBoardZoom(boardZoom + (e.deltaY > 0 ? -BOARD_ZOOM_STEP : BOARD_ZOOM_STEP));
     }, { passive: false });
     d.addEventListener('keydown', (e) => {
+      handleBoardSpaceKeydown(e);
       if(e.key === 'Escape'){
         const po = d.getElementById('previewOverlay');
         if(po && po.classList.contains('open')){ closePreview(); return; }
@@ -1541,17 +1582,21 @@
         if(e.shiftKey) ungroupSelectedPlacements(); else groupSelectedPlacements();
       }
     });
+    d.addEventListener('keyup', handleBoardSpaceKeyup);
 
     // 메인 화면의 레퍼런스 카드를 이 창으로 드래그해서 놓으면 바로 보드에 추가한다.
+    // 놓은 지점(clientX/Y)을 캔버스 좌표로 변환해서 그 자리에 정확히 배치한다(1번 기능).
     const canvas = d.getElementById('boardCanvas');
     canvas.addEventListener('dragover', (e) => { e.preventDefault(); });
     canvas.addEventListener('drop', (e) => {
       e.preventDefault();
       const itemId = e.dataTransfer.getData('text/plain');
-      if(itemId) addToBoard(itemId);
+      if(!itemId) return;
+      const pos = screenToCanvasCoords(e.clientX, e.clientY);
+      addToBoard(itemId, pos.x, pos.y);
     });
-    // 빈 캔버스를 드래그하면 마퀴 선택을 시작한다.
-    canvas.addEventListener('mousedown', startBoardMarquee);
+    // 빈 캔버스를 드래그하면 마퀴 선택(스페이스바를 누르고 있으면 화면 이동)을 시작한다.
+    canvas.addEventListener('mousedown', startBoardCanvasMouseDown);
     // 우클릭 컨텍스트 메뉴 — 카드 위/빈 캔버스 둘 다 이 리스너 하나로 처리(contextmenu는 버블링됨).
     canvas.addEventListener('contextmenu', openBoardContextMenu);
   }
@@ -1587,6 +1632,7 @@
     }
     boardOverlay.classList.remove('open');
     activeSceneId = null;
+    boardSpaceDown = false;
     hideBoardPicker();
     closeBoardContextMenu();
   }
@@ -1605,16 +1651,95 @@
     if(btn) btn.classList.toggle('active', boardGridSnap);
   }
 
+  // 화면 좌표(mouse clientX/clientY)를 캔버스 좌표(줌 100% 기준)로 변환하는 공통 함수.
+  // getBoundingClientRect()는 지금 실제로 화면에 보이는 캔버스 위치를 돌려주므로,
+  // board-canvas-wrap이 스크롤(팬)돼 있어도 별도 보정 없이 자동으로 반영된다.
+  // 드롭 배치, 우클릭 메뉴, 마퀴 선택이 모두 이 함수를 공유해서 쓴다.
+  function screenToCanvasCoords(clientX, clientY){
+    const canvas = $b('boardCanvas');
+    const rect = canvas.getBoundingClientRect();
+    return { x: (clientX - rect.left) / boardZoom, y: (clientY - rect.top) / boardZoom };
+  }
+
+  // ---------- pan (스페이스바 + 드래그로 화면 이동) ----------
+  function setBoardSpaceDown(v){
+    if(boardSpaceDown === v) return;
+    boardSpaceDown = v;
+    const wrap = $b('boardCanvasWrap');
+    if(wrap) wrap.classList.toggle('space-pan', v);
+  }
+  // 노트/입력창에 타이핑 중인 스페이스는 무시하고, 보드가 열려 있을 때만 동작한다.
+  function handleBoardSpaceKeydown(e){
+    if(!activeSceneId || e.code !== 'Space' || e.repeat) return;
+    const tag = (e.target && e.target.tagName || '').toLowerCase();
+    if(tag === 'textarea' || tag === 'input' || (e.target && e.target.isContentEditable)) return;
+    e.preventDefault();
+    setBoardSpaceDown(true);
+  }
+  function handleBoardSpaceKeyup(e){
+    if(e.code !== 'Space') return;
+    setBoardSpaceDown(false);
+  }
+  // 빈 캔버스 드래그 시작 지점의 진입점: 스페이스바가 눌려 있으면 팬, 아니면 기존 마퀴 선택.
+  function startBoardCanvasMouseDown(e){
+    if(boardSpaceDown) startBoardPan(e); else startBoardMarquee(e);
+  }
+  function startBoardPan(e){
+    if(e.button !== 0) return;
+    e.preventDefault();
+    closeBoardContextMenu();
+    const wrap = $b('boardCanvasWrap');
+    if(!wrap) return;
+    panState = { startX: e.clientX, startY: e.clientY, startScrollLeft: wrap.scrollLeft, startScrollTop: wrap.scrollTop };
+    wrap.classList.add('panning');
+    boardDoc().addEventListener('mousemove', onBoardPanMove);
+    boardDoc().addEventListener('mouseup', onBoardPanEnd);
+  }
+  function onBoardPanMove(e){
+    if(!panState) return;
+    const wrap = $b('boardCanvasWrap');
+    if(!wrap) return;
+    wrap.scrollLeft = panState.startScrollLeft - (e.clientX - panState.startX);
+    wrap.scrollTop = panState.startScrollTop - (e.clientY - panState.startY);
+  }
+  function onBoardPanEnd(){
+    boardDoc().removeEventListener('mousemove', onBoardPanMove);
+    boardDoc().removeEventListener('mouseup', onBoardPanEnd);
+    const wrap = $b('boardCanvasWrap');
+    if(wrap) wrap.classList.remove('panning');
+    panState = null;
+  }
+
+  // ---------- note font size / family presets (2번 기능) ----------
+  const NOTE_FONT_SIZE_DEFAULT = 12.5; // 기존 .board-note-text 기본값과 동일
+  const NOTE_FONT_SIZES = [
+    { value: 10, label: '작게' },
+    { value: 12.5, label: '보통' },
+    { value: 16, label: '크게' },
+  ];
+  const NOTE_FONT_PRESETS = [
+    { id: 'sans', label: '기본 (고딕)', stack: '-apple-system, BlinkMacSystemFont, "Pretendard", "Apple SD Gothic Neo", "Segoe UI", sans-serif' },
+    { id: 'serif', label: '명조', stack: '"Batang", "Apple Myungjo", "Nanum Myeongjo", Georgia, serif' },
+    { id: 'hand', label: '손글씨', stack: '"Segoe Print", "Bradley Hand", "Comic Sans MS", cursive' },
+    { id: 'mono', label: '고정폭', stack: '"Consolas", "SFMono-Regular", "Menlo", monospace' },
+  ];
+  function noteFontStack(id){
+    const preset = NOTE_FONT_PRESETS.find(f => f.id === id);
+    return preset ? preset.stack : NOTE_FONT_PRESETS[0].stack;
+  }
+
   function renderBoard(){
     const canvas = $b('boardCanvas');
     const placements = boardPlacements.filter(p => p.sceneId === activeSceneId);
     canvas.innerHTML = placements.map(p => {
       const extraCls = (selectedPlacementIds.has(p.id) ? ' selected' : '') + (p.groupId ? ' grouped' : '');
       if(p.type === 'note'){
+        const noteFontSize = p.fontSize || NOTE_FONT_SIZE_DEFAULT;
+        const noteFontStackVal = noteFontStack(p.fontFamily);
         return `<div class="board-card board-note${extraCls}" data-board-card="${p.id}" style="left:${p.x}px; top:${p.y}px; width:${p.w}px; height:${p.h}px; z-index:${p.z};">
           <div class="board-note-handle" data-board-drag-handle="${p.id}"></div>
           <button type="button" class="board-remove" data-board-remove="${p.id}" title="보드에서 제거">✕</button>
-          <textarea class="board-note-text" data-board-note-text="${p.id}" placeholder="메모...">${escapeHtml(p.text || '')}</textarea>
+          <textarea class="board-note-text" data-board-note-text="${p.id}" placeholder="메모..." style="font-size:${noteFontSize}px; font-family:${escapeHtml(noteFontStackVal)};">${escapeHtml(p.text || '')}</textarea>
           <div class="board-resize" data-board-resize="${p.id}"></div>
         </div>`;
       }
@@ -1634,6 +1759,7 @@
       const dragTarget = handle || card;
       dragTarget.addEventListener('mousedown', (e) => {
         if(e.button !== 0) return; // 우클릭은 컨텍스트 메뉴 전용 — 드래그/클릭 프리뷰 로직을 타지 않게 막는다
+        if(boardSpaceDown) return; // 스페이스바+드래그는 화면 이동 전용 — 카드 선택/드래그를 막는다
         if(e.target.closest('[data-board-resize]') || e.target.closest('[data-board-remove]')) return;
         closeBoardContextMenu();
         const id = card.dataset.boardCard;
@@ -1655,6 +1781,7 @@
     canvas.querySelectorAll('[data-board-resize]').forEach(handle => {
       handle.addEventListener('mousedown', (e) => {
         if(e.button !== 0) return;
+        if(boardSpaceDown) return;
         e.stopPropagation();
         startResizePlacement(e, handle.dataset.boardResize);
       });
@@ -1807,8 +1934,6 @@
 
   function openBoardContextMenu(e){
     e.preventDefault();
-    const canvas = $b('boardCanvas');
-    const rect = canvas.getBoundingClientRect();
     const cardEl = e.target.closest('[data-board-card]');
     const cardId = cardEl ? cardEl.dataset.boardCard : null;
     // 아직 선택 안 된 카드를 우클릭하면 그 카드 하나만 선택한다. 이미 여러 개 선택된 상태에서
@@ -1816,9 +1941,8 @@
     if(cardId && !(selectedPlacementIds.has(cardId) && selectedPlacementIds.size > 1)){
       setSelection([cardId]);
     }
-    const clickX = (e.clientX - rect.left) / boardZoom;
-    const clickY = (e.clientY - rect.top) / boardZoom;
-    boardContextMenuState = { kind: cardId ? 'card' : 'canvas', x: clickX, y: clickY };
+    const pos = screenToCanvasCoords(e.clientX, e.clientY);
+    boardContextMenuState = { kind: cardId ? 'card' : 'canvas', x: pos.x, y: pos.y };
     renderBoardContextMenu(e.clientX, e.clientY);
   }
 
@@ -1830,6 +1954,8 @@
     const menu = $b('boardContextMenu');
     if(!menu || !boardContextMenuState) return;
     const n = selectedPlacementIds.size;
+    const selectedList = boardPlacements.filter(p => selectedPlacementIds.has(p.id));
+    const singleNote = (selectedList.length === 1 && selectedList[0].type === 'note') ? selectedList[0] : null;
     let html;
     if(boardContextMenuState.kind === 'card'){
       const hasGroup = boardPlacements.some(p => selectedPlacementIds.has(p.id) && p.groupId);
@@ -1847,6 +1973,7 @@
         ctxItem('align-bottom', '⤓ 아래쪽 정렬', n < 2),
         ctxItem('match-size', '⛶ 크기 맞춤', n < 2),
       ].join('');
+      if(singleNote) html += noteFontControlsHtml(singleNote);
     } else {
       html = [
         ctxItem('add-note', '+ 메모 추가'),
@@ -1872,6 +1999,47 @@
         closeBoardContextMenu();
       });
     });
+    if(singleNote) wireNoteFontControls(menu, singleNote);
+  }
+
+  // 메모 카드 하나만 선택된 상태로 우클릭하면 뜨는 글자 크기/폰트 인라인 컨트롤(2번 기능).
+  // 선택하는 즉시 바로 적용되는 미리보기 방식이라 별도의 "적용" 버튼은 없다.
+  function noteFontControlsHtml(note){
+    const sizeOptions = NOTE_FONT_SIZES.map(s => `<option value="${s.value}">${s.label}</option>`).join('');
+    const familyOptions = NOTE_FONT_PRESETS.map(f => `<option value="${f.id}">${escapeHtml(f.label)}</option>`).join('');
+    return [
+      '<div class="ctx-sep"></div>',
+      `<div class="ctx-item ctx-item-select"><span>글자 크기</span><select data-ctx-note-fontsize>${sizeOptions}</select></div>`,
+      `<div class="ctx-item ctx-item-select"><span>폰트</span><select data-ctx-note-fontfamily>${familyOptions}</select></div>`,
+    ].join('');
+  }
+  function wireNoteFontControls(menu, note){
+    const sizeSel = menu.querySelector('[data-ctx-note-fontsize]');
+    if(sizeSel){
+      sizeSel.value = String(note.fontSize || NOTE_FONT_SIZE_DEFAULT);
+      sizeSel.addEventListener('click', (e) => e.stopPropagation());
+      sizeSel.addEventListener('change', () => setNoteFontSize(note.id, Number(sizeSel.value)));
+    }
+    const famSel = menu.querySelector('[data-ctx-note-fontfamily]');
+    if(famSel){
+      famSel.value = note.fontFamily || NOTE_FONT_PRESETS[0].id;
+      famSel.addEventListener('click', (e) => e.stopPropagation());
+      famSel.addEventListener('change', () => setNoteFontFamily(note.id, famSel.value));
+    }
+  }
+  function setNoteFontSize(placementId, size){
+    const p = boardPlacements.find(x => x.id === placementId);
+    if(!p) return;
+    p.fontSize = size;
+    renderBoard();
+    afterDataChange();
+  }
+  function setNoteFontFamily(placementId, familyId){
+    const p = boardPlacements.find(x => x.id === placementId);
+    if(!p) return;
+    p.fontFamily = familyId;
+    renderBoard();
+    afterDataChange();
   }
 
   function handleBoardContextAction(action){
@@ -1901,9 +2069,7 @@
     if(e.target.closest('[data-board-card]')) return;
     closeBoardContextMenu();
     const canvas = $b('boardCanvas');
-    const rect = canvas.getBoundingClientRect();
-    const startX = (e.clientX - rect.left) / boardZoom;
-    const startY = (e.clientY - rect.top) / boardZoom;
+    const { x: startX, y: startY } = screenToCanvasCoords(e.clientX, e.clientY);
     marqueeState = { startX, startY, additive: e.shiftKey, moved: false, base: new Set(selectedPlacementIds) };
     const box = boardDoc().createElement('div');
     box.className = 'board-select-rect';
@@ -1914,10 +2080,7 @@
   }
   function onBoardMarqueeMove(e){
     if(!marqueeState) return;
-    const canvas = $b('boardCanvas');
-    const rect = canvas.getBoundingClientRect();
-    const curX = (e.clientX - rect.left) / boardZoom;
-    const curY = (e.clientY - rect.top) / boardZoom;
+    const { x: curX, y: curY } = screenToCanvasCoords(e.clientX, e.clientY);
     const dx = curX - marqueeState.startX, dy = curY - marqueeState.startY;
     if(Math.abs(dx) > BOARD_CLICK_THRESHOLD || Math.abs(dy) > BOARD_CLICK_THRESHOLD) marqueeState.moved = true;
     const x = Math.min(marqueeState.startX, curX), y = Math.min(marqueeState.startY, curY);
@@ -2166,7 +2329,9 @@
   // 정사각형으로 고정하면 이미지가 잘려 보이므로, 원본 이미지의 가로세로 비율을 읽어와
   // 그 비율 그대로(긴 변 기준 BOARD_DEFAULT_MAX 이하로 축소해서) 기본 크기를 잡는다.
   const BOARD_DEFAULT_MAX = 260;
-  async function addToBoard(itemId){
+  // atX/atY(캔버스 좌표)가 주어지면 그 지점이 카드의 "중심"이 되도록 배치한다(드래그 앤 드롭용).
+  // 없으면 기존처럼 카스케이드 배치(보드 picker에서 클릭으로 추가할 때 등).
+  async function addToBoard(itemId, atX, atY){
     const scene = scenes.find(s => s.id === activeSceneId);
     const item = items.find(i => i.id === itemId);
     if(!scene || !item) return;
@@ -2183,11 +2348,18 @@
     } catch(e){
       console.error('보드에 올릴 이미지 크기를 읽지 못해 기본 정사각형 크기를 사용해요', e);
     }
-    const count = boardPlacements.filter(p => p.sceneId === activeSceneId).length;
-    const cascade = (count % 8) * 24;
+    let x, y;
+    if(typeof atX === 'number' && typeof atY === 'number'){
+      x = Math.max(0, Math.round(atX - w / 2));
+      y = Math.max(0, Math.round(atY - h / 2));
+    } else {
+      const count = boardPlacements.filter(p => p.sceneId === activeSceneId).length;
+      const cascade = (count % 8) * 24;
+      x = 24 + cascade; y = 24 + cascade;
+    }
     boardPlacements.push({
       id: uid('bp'), sceneId: activeSceneId, type: 'item', itemId,
-      x: 24 + cascade, y: 24 + cascade, w, h, z: maxBoardZ() + 1
+      x, y, w, h, z: maxBoardZ() + 1
     });
     renderBoard();
     renderBoardPicker();
@@ -2213,7 +2385,8 @@
     const id = uid('bp');
     boardPlacements.push({
       id, sceneId: activeSceneId, type: 'note',
-      x, y, w: NOTE_W, h: NOTE_H, z: maxBoardZ() + 1, text: ''
+      x, y, w: NOTE_W, h: NOTE_H, z: maxBoardZ() + 1, text: '',
+      fontSize: NOTE_FONT_SIZE_DEFAULT, fontFamily: NOTE_FONT_PRESETS[0].id
     });
     renderBoard();
     renderSceneBar();
@@ -2943,7 +3116,12 @@
           z: Number(p.z) || 0
         };
         if(typeof p.groupId === 'string' && p.groupId) base.groupId = p.groupId;
-        return type === 'note' ? { ...base, text: typeof p.text === 'string' ? p.text : '' } : { ...base, itemId: p.itemId };
+        return type === 'note' ? {
+          ...base,
+          text: typeof p.text === 'string' ? p.text : '',
+          fontSize: (typeof p.fontSize === 'number' && p.fontSize > 0) ? p.fontSize : NOTE_FONT_SIZE_DEFAULT,
+          fontFamily: (typeof p.fontFamily === 'string' && NOTE_FONT_PRESETS.some(f => f.id === p.fontFamily)) ? p.fontFamily : NOTE_FONT_PRESETS[0].id
+        } : { ...base, itemId: p.itemId };
       });
     return {
       items: validItems, categories: validCategories, folders: validFolders,
@@ -3275,6 +3453,16 @@
   categoryOverlay.addEventListener('click', (e) => { if(e.target === categoryOverlay) categoryTaxonomy.closeModal(); });
   $('categoryNameInput').addEventListener('keydown', (e) => { if(e.key === 'Enter') categoryTaxonomy.save(); });
 
+  // ---------- 레퍼런스 추가 모달 안에서 바로 폴더/카테고리 만들기 (3번 기능) ----------
+  $('btnFolderQuickAdd').addEventListener('click', () => {
+    folderQuickAddFromRefModal = true;
+    folderTaxonomy.openModal();
+  });
+  $('btnCategoryQuickAdd').addEventListener('click', () => {
+    categoryQuickAddFromRefModal = true;
+    categoryTaxonomy.openModal();
+  });
+
   $('btnProjectCancel').addEventListener('click', closeProjectModal);
   $('btnProjectSave').addEventListener('click', saveProject);
   projectOverlay.addEventListener('click', (e) => { if(e.target === projectOverlay) closeProjectModal(); });
@@ -3310,20 +3498,23 @@
   $('btnAlignVCenter').addEventListener('click', () => alignSelectedPlacements('vcenter'));
   $('btnAlignBottom').addEventListener('click', () => alignSelectedPlacements('bottom'));
   $('btnBoardMatchSize').addEventListener('click', matchSizeSelectedPlacements);
+  // Ctrl 없이 휠만으로 줌(4번 기능) — 화면 이동은 스페이스바+드래그가 대신 맡는다.
   $('boardCanvasWrap').addEventListener('wheel', (e) => {
-    if(!(e.ctrlKey || e.metaKey)) return; // Ctrl+휠 또는 트랙패드 핀치(둘 다 ctrlKey가 true로 옴)
     e.preventDefault();
     setBoardZoom(boardZoom + (e.deltaY > 0 ? -BOARD_ZOOM_STEP : BOARD_ZOOM_STEP));
   }, { passive: false });
   // PiP 미지원 브라우저의 폴백 모달에서도 카드 드래그 추가가 동일하게 되도록 맞춰준다.
+  // 놓은 지점(clientX/Y)을 캔버스 좌표로 변환해서 그 자리에 정확히 배치한다(1번 기능).
   $('boardCanvas').addEventListener('dragover', (e) => { e.preventDefault(); });
   $('boardCanvas').addEventListener('drop', (e) => {
     e.preventDefault();
     const itemId = e.dataTransfer.getData('text/plain');
-    if(itemId) addToBoard(itemId);
+    if(!itemId) return;
+    const pos = screenToCanvasCoords(e.clientX, e.clientY);
+    addToBoard(itemId, pos.x, pos.y);
   });
-  // 빈 캔버스를 드래그하면 마퀴 선택을 시작한다.
-  $('boardCanvas').addEventListener('mousedown', startBoardMarquee);
+  // 빈 캔버스를 드래그하면 마퀴 선택(스페이스바를 누르고 있으면 화면 이동)을 시작한다.
+  $('boardCanvas').addEventListener('mousedown', startBoardCanvasMouseDown);
   // 우클릭 컨텍스트 메뉴 — 카드 위/빈 캔버스 둘 다 이 리스너 하나로 처리(contextmenu는 버블링됨).
   $('boardCanvas').addEventListener('contextmenu', openBoardContextMenu);
 
@@ -3494,25 +3685,32 @@
   });
 
   document.addEventListener('keydown', (e) => {
-    if(e.key === 'Escape' && overlay.classList.contains('open')) closeModal();
-    if(e.key === 'Escape' && folderOverlay.classList.contains('open')) folderTaxonomy.closeModal();
-    if(e.key === 'Escape' && categoryOverlay.classList.contains('open')) categoryTaxonomy.closeModal();
-    if(e.key === 'Escape' && projectOverlay.classList.contains('open')) closeProjectModal();
-    if(e.key === 'Escape' && sceneOverlay.classList.contains('open')) closeSceneModal();
-    // 미리보기(확장 보기)가 무드보드 모달 위에 겹쳐 떠 있을 수 있으니, 열려있으면 보드보다 먼저 닫는다.
-    if(e.key === 'Escape' && previewOverlay.classList.contains('open')){ closePreview(); return; }
-    if(e.key === 'Escape' && boardOverlay.classList.contains('open')){
-      if(boardContextMenuState){ closeBoardContextMenu(); return; }
-      if(selectedPlacementIds.size > 0){ clearBoardSelection(); return; }
-      closeBoard();
+    handleBoardSpaceKeydown(e);
+    // Escape는 지금 가장 위에(나중에) 열려 있는 모달 하나만 닫아야 한다 — 특히 폴더/카테고리
+    // 새로 만들기 모달이 레퍼런스 추가 모달 위에 겹쳐 떠 있을 때(3번 기능), 그 안쪽 모달만
+    // 닫히고 바깥 레퍼런스 추가 모달은 그대로 남아 있어야 하므로 우선순위대로 하나만 처리하고 끝낸다.
+    if(e.key === 'Escape'){
+      if(previewOverlay.classList.contains('open')){ closePreview(); return; }
+      if(boardOverlay.classList.contains('open')){
+        if(boardContextMenuState){ closeBoardContextMenu(); return; }
+        if(selectedPlacementIds.size > 0){ clearBoardSelection(); return; }
+        closeBoard();
+        return;
+      }
+      if(captureOverlay.classList.contains('open')){ captureOverlay.classList.remove('open'); return; }
+      if(folderOverlay.classList.contains('open')){ folderTaxonomy.closeModal(); return; }
+      if(categoryOverlay.classList.contains('open')){ categoryTaxonomy.closeModal(); return; }
+      if(projectOverlay.classList.contains('open')){ closeProjectModal(); return; }
+      if(sceneOverlay.classList.contains('open')){ closeSceneModal(); return; }
+      if(overlay.classList.contains('open')){ closeModal(); return; }
       return;
     }
-    if(e.key === 'Escape' && captureOverlay.classList.contains('open')) captureOverlay.classList.remove('open');
     if(boardOverlay.classList.contains('open') && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'g'){
       e.preventDefault();
       if(e.shiftKey) ungroupSelectedPlacements(); else groupSelectedPlacements();
     }
   });
+  document.addEventListener('keyup', handleBoardSpaceKeyup);
 
   initTheme();
   applySidebarVisibility();
