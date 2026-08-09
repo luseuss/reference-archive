@@ -27,7 +27,7 @@ Tauri로 Windows exe도 한 번 만들어봤지만(독립 실행 파일 + NSIS �
   `src-tauri/target/`만 등록되어 있고, `src-tauri/` 자체는 그냥 git add를 안 함).
   다른 컴퓨터에는 이 폴더가 없음 — exe를 다시 만들려면 Rust부터 새로 설치해야 함.
 
-## 지금까지 병합된 작업 (PR #1~#19, 전부 main에 병합됨)
+## 지금까지 병합된 작업 (PR #1~#20, 전부 main에 병합됨)
 
 **PR #1~#5** (초기 단계):
 1. README.md 추가 (첫 PR 연습)
@@ -82,7 +82,37 @@ Tauri로 Windows exe도 한 번 만들어봤지만(독립 실행 파일 + NSIS �
 `startBoardMarquee`에 이미 있던 것과 같은 `if(e.button !== 0) return;` 가드로 카드/리사이즈 핸들
 mousedown에도 추가해서 고침.
 
-로컬 `main`은 PR #19 병합 후 `b6dc699`까지 동기화 확인됨.
+**PR #20 (무드보드 드롭 위치/메모 폰트/폴더·카테고리 즉시 생성/팬-줌 — 사용자가 4가지를 한 번에 요청)**:
+1. 메인 화면 카드를 무드보드로 드래그해서 놓으면 이제 카스케이드가 아니라 실제로 놓은 위치(카드
+   중심 기준)에 정확히 배치됨. 좌표 변환을 `screenToCanvasCoords(clientX, clientY)` 공통 함수로
+   뽑아서 드롭 배치·마퀴 선택·우클릭 메뉴가 전부 공유(각자 따로 갖고 있던 rect/줌 계산 중복 제거).
+   `addToBoard(itemId, atX, atY)`가 좌표를 받으면 그 지점을 카드 중심으로 배치, 없으면 기존
+   카스케이드 유지(피커 클릭 추가는 그대로).
+2. 메모(스티키노트)에 `fontSize`/`fontFamily` 필드 추가(기본값은 기존 12.5px 산세리프 그대로).
+   메모 하나만 선택한 채 우클릭하면 컨텍스트 메뉴에 글자 크기(작게/보통/크게)·폰트(기본 고딕/명조/
+   손글씨/고정폭 — 전부 시스템 폰트, 새 웹폰트 로드 없음) 드롭다운이 떠서 즉시 적용됨.
+   `parseAndValidate()`에서 안전한 기본값으로 복원, `exportData`/`writeToFile`은 이미 placement를
+   통째로 직렬화하고 있어서 별도 수정 불필요.
+3. "레퍼런스 추가" 모달의 폴더/카테고리 select 옆에 "+" 버튼 추가 — 기존
+   `folderTaxonomy.openModal()`/`categoryTaxonomy.openModal()`을 그대로 재사용(새 모달 안 만듦).
+   `makeTaxonomy()`에 `onCreate`/`onClose` 훅을 추가해서, 이 버튼으로 만든 폴더/카테고리는 저장
+   즉시 그 select에 자동 선택됨. "먼저 만들어주세요" 안내문 삭제. **부수 버그 수정**: 전역 Escape
+   키다운 핸들러가 열려있는 모달을 전부 개별 `if`로 닫고 있어서, 중첩 모달(폴더/카테고리 생성
+   모달이 레퍼런스 추가 모달 위에 뜬 상태)에서 Escape를 누르면 안쪽 모달만 닫혀야 하는데 바깥
+   레퍼런스 추가 모달까지 같이 닫혔음. 우선순위 체인(가장 위 모달 하나만 처리하고 return)으로 재작성.
+4. 무드보드 휠 줌에서 Ctrl 요구 제거(휠만으로 줌). 스페이스바를 누른 채 드래그하면 캔버스가
+   팬(스크롤)되고, 커서가 grab/grabbing으로 바뀜. 스페이스 없이 드래그하면 기존처럼 마퀴 선택
+   (빈 캔버스)·카드 드래그(카드 위)가 그대로 동작 — 카드 위에서 스페이스+드래그해도 카드는
+   움직이지 않고 팬만 되도록 카드/리사이즈 mousedown 핸들러에 가드 추가.
+   이 sandbox 환경엔 Node가 없어서 문법 검증은 못 했고, 로컬 PowerShell `HttpListener` +
+   `mcp__Claude_Browser__javascript_tool`로 실제 UI를 조작해 프로젝트/장면/아이템을 만들고,
+   70% 축소 상태에서 synthetic `DragEvent('drop')`으로 드롭 위치 계산을 검증하고, 메모 폰트/크기를
+   바꾼 뒤 `btnExport`를 가로채 내보낸 JSON을 `fileImportFallback`에 넣어 실제
+   `parseAndValidate`→`mergeOrReplace` 경로로 재로드해서 값이 복원되는지까지 확인했음. 폴더/카테고리
+   중첩 모달의 Escape/바깥클릭 격리와 자동 선택, 휠 줌·스페이스+팬·마퀴의 상호 배제(카드 위
+   스페이스+드래그 포함)도 synthetic 이벤트로 전부 확인 완료.
+
+로컬 `main`은 PR #20 병합 후 `48cddcb`까지 동기화 확인됨.
 
 ## 중요한 결정/맥락 (git 로그엔 안 보이는 부분)
 - Windows Smart App Control이 Tauri/Rust 빌드를 막은 적 있음(사용자가 직접 설정 껐음 — 보안 설정은
