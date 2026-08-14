@@ -211,7 +211,11 @@
   .thumb.fixed{ aspect-ratio:4/3; }
   .thumb.fixed img{ height:100%; object-fit:cover; }
   .thumb.video-embed{ aspect-ratio:16/9; cursor:default; }
-  .thumb.video-embed iframe{ width:100%; height:100%; border:0; display:block; }
+  /* controls=0이라 iframe 안에 실제로 누를 게 없다 — pointer-events:none으로 클릭/호버를
+     그대로 부모(.thumb, data-preview 보유)에 넘겨서 카드 클릭(크게 보기)과 호버 재생이
+     안정적으로 동작하게 한다. 이게 없으면 크로스오리진 iframe 위에서 부모 쪽 mouseenter가
+     안 잡히는 경우가 있었다(호버해도 재생 안 되는 원인 중 하나). */
+  .thumb.video-embed iframe{ width:100%; height:100%; border:0; display:block; pointer-events:none; }
   .thumb-quad{ display:grid; grid-template-columns:1fr 1fr; grid-template-rows:1fr 1fr; width:100%; height:100%; gap:1px; background:var(--border); }
   .thumb-quad img{ width:100%; height:100%; object-fit:cover; display:block; }
   .play-badge{
@@ -1109,7 +1113,6 @@
     const autoplayHover = !!(opts && opts.autoplayHover);
     const params = new URLSearchParams({ modestbranding: '1', rel: '0', iv_load_policy: '3' });
     if(autoplayHover){
-      params.set('enablejsapi', '1');
       params.set('mute', '1');
       params.set('controls', '0');
     }
@@ -3220,40 +3223,23 @@
   }
 
   // ---------- 유튜브 호버 미리보기 재생 ----------
-  // enablejsapi=1 iframe이라도 내부 플레이어 스크립트가 다 부팅되기 전에 postMessage로
-  // playVideo를 보내면 조용히 무시된다(호버하자마자 바로 명령을 보내는 우리 쪽 타이밍 특성상
-  // 실제로 자주 놓친다). 플레이어가 스스로 쏘는 onReady 메시지를 받을 때까지는 "재생하고
-  // 싶다"는 의도만 큐에 담아두고, 준비 신호가 오면(또는 이미 준비된 뒤라면 바로) 그때 보낸다.
-  // 무드보드는 실제 PiP 창 안에서는 애초에 유튜브 임베드 자체를 안 만드므로(canEmbed가 false),
-  // 여기서 관리하는 iframe은 항상 메인 document에만 있다 — 리스너도 메인 window 하나면 충분하다.
-  const ytReadyIframes = new WeakSet();
-  const ytPendingPlay = new WeakSet();
-  window.addEventListener('message', (e) => {
-    if(!/^https:\/\/(www\.)?youtube\.com$/.test(e.origin)) return;
-    let data;
-    try{ data = JSON.parse(e.data); } catch(err){ return; }
-    if(!data || data.event !== 'onReady') return;
-    document.querySelectorAll('iframe').forEach(f => {
-      if(f.contentWindow !== e.source) return;
-      ytReadyIframes.add(f);
-      if(ytPendingPlay.has(f)){ ytPendingPlay.delete(f); ytPost(f, 'playVideo'); }
-    });
-  });
+  // postMessage(enablejsapi) 기반 재생 명령은 신뢰할 수 없었다 — 실제로 붙여서 테스트해보니
+  // 플레이어가 onReady를 포함해 어떤 메시지도 부모 쪽에 보내지 않는 경우가 있어서(광고 차단
+  // 확장이나 브라우저/환경에 따라 자주 있는 일), 재생 명령이 계속 조용히 무시됐다. 대신 iframe의
+  // src 자체를 autoplay=1을 붙인 URL로 바꿔치기해서 새로 로드하는 방식을 쓴다 — JS API 없이
+  // URL 파라미터만으로 동작해서(음소거 자동재생은 브라우저 정책상 항상 허용) 훨씬 안정적이다.
+  // mouseleave 땐 autoplay 없는 원래 src로 되돌리는데, 이러면 iframe이 다시 로드되면서
+  // 자연스럽게 처음 상태로 리셋된다(기존에 원하던 동작 그대로).
   function ytPlayOnHover(iframe){
     if(!iframe) return;
-    if(ytReadyIframes.has(iframe)) ytPost(iframe, 'playVideo');
-    else ytPendingPlay.add(iframe); // 아직 준비 안 됐으면 onReady 오는 대로 재생하도록 예약
+    if(!iframe.dataset.baseSrc) iframe.dataset.baseSrc = iframe.src;
+    const u = new URL(iframe.dataset.baseSrc);
+    u.searchParams.set('autoplay', '1');
+    iframe.src = u.toString();
   }
   function ytStopOnHoverLeave(iframe){
     if(!iframe) return;
-    ytPendingPlay.delete(iframe); // 준비되기 전에 마우스가 떠났으면 예약해둔 재생을 취소
-    if(ytReadyIframes.has(iframe)) ytPost(iframe, 'stopVideo');
-  }
-  // 유튜브 iframe(enablejsapi=1)에 재생/정지 명령을 보낸다. 새로 API 스크립트를
-  // 로드하지 않고, 플레이어가 직접 처리하는 postMessage 프로토콜을 그대로 쓴다.
-  function ytPost(iframe, func){
-    if(!iframe || !iframe.contentWindow) return;
-    iframe.contentWindow.postMessage(JSON.stringify({ event: 'command', func, args: [] }), '*');
+    if(iframe.dataset.baseSrc) iframe.src = iframe.dataset.baseSrc;
   }
 
   // 항목 추가/수정/삭제, 폴더·카테고리·태그·파트 변경처럼 목록 구성 자체가
