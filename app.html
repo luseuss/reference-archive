@@ -1569,7 +1569,7 @@
     // Ctrl 없이 휠만으로 줌(4번 기능) — 화면 이동은 스페이스바+드래그가 대신 맡는다.
     d.getElementById('boardCanvasWrap').addEventListener('wheel', (e) => {
       e.preventDefault();
-      setBoardZoom(boardZoom + (e.deltaY > 0 ? -BOARD_ZOOM_STEP : BOARD_ZOOM_STEP));
+      setBoardZoom(boardZoom + (e.deltaY > 0 ? -BOARD_ZOOM_STEP : BOARD_ZOOM_STEP), { clientX: e.clientX, clientY: e.clientY });
     }, { passive: false });
     wireBoardPan(d, d.getElementById('boardCanvasWrap'));
     d.addEventListener('keydown', (e) => {
@@ -1644,10 +1644,29 @@
 
   // ---------- zoom (scale the canvas visually; drag/resize math below compensates for it) ----------
   const BOARD_ZOOM_MIN = 0.25, BOARD_ZOOM_MAX = 2, BOARD_ZOOM_STEP = 0.1;
-  function setBoardZoom(z){
-    boardZoom = Math.min(BOARD_ZOOM_MAX, Math.max(BOARD_ZOOM_MIN, z));
+  // anchor({clientX, clientY})가 주어지면 그 화면 지점 아래의 콘텐츠가 줌 전후로 같은 자리에
+  // 그대로 남아있도록 board-canvas-wrap의 스크롤을 보정한다(마우스 포인터 기준 확대/축소, 휠 줌용).
+  // 안 주어지면(줌 인/아웃 버튼, 리셋) 기존처럼 스크롤을 건드리지 않는다.
+  function setBoardZoom(z, anchor){
+    const wrap = $b('boardCanvasWrap');
+    const oldZoom = boardZoom;
+    const newZoom = Math.min(BOARD_ZOOM_MAX, Math.max(BOARD_ZOOM_MIN, z));
+    let localX, localY, contentX, contentY;
+    if(anchor && wrap){
+      const wrapRect = wrap.getBoundingClientRect();
+      localX = anchor.clientX - wrapRect.left;
+      localY = anchor.clientY - wrapRect.top;
+      // 줌 전, 마우스 포인터 아래에 있던 콘텐츠 좌표(줌 100% 기준)를 구해둔다.
+      contentX = (wrap.scrollLeft + localX) / oldZoom;
+      contentY = (wrap.scrollTop + localY) / oldZoom;
+    }
+    boardZoom = newZoom;
     $b('boardCanvas').style.transform = `scale(${boardZoom})`;
     $b('boardZoomLabel').textContent = Math.round(boardZoom * 100) + '%';
+    if(anchor && wrap){
+      wrap.scrollLeft = contentX * boardZoom - localX;
+      wrap.scrollTop = contentY * boardZoom - localY;
+    }
   }
 
   function toggleBoardGridSnap(){
@@ -3561,7 +3580,7 @@
   // Ctrl 없이 휠만으로 줌(4번 기능) — 화면 이동은 스페이스바+드래그가 대신 맡는다.
   $('boardCanvasWrap').addEventListener('wheel', (e) => {
     e.preventDefault();
-    setBoardZoom(boardZoom + (e.deltaY > 0 ? -BOARD_ZOOM_STEP : BOARD_ZOOM_STEP));
+    setBoardZoom(boardZoom + (e.deltaY > 0 ? -BOARD_ZOOM_STEP : BOARD_ZOOM_STEP), { clientX: e.clientX, clientY: e.clientY });
   }, { passive: false });
   wireBoardPan(document, $('boardCanvasWrap'));
   // PiP 미지원 브라우저의 폴백 모달에서도 카드 드래그 추가가 동일하게 되도록 맞춰준다.
