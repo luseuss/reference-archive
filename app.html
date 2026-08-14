@@ -866,6 +866,14 @@
   // "지금 보드가 실제로 어느 문서에 그려지고 있는지"에 맞춰 동작한다.
   function boardDoc(){ return (boardWindow && !boardWindow.closed) ? boardWindow.document : document; }
   function $b(id){ return boardDoc().getElementById(id); }
+  // Document PiP 창은 실제 URL로 이동한 적 없는 about:blank 문서라서(win.document.body.innerHTML로
+  // DOM만 채워 넣음), 그 안에 심는 유튜브 iframe은 리퍼러/오리진이 비어있는 걸로 보여 오류 153이
+  // 뜬다 — enablejsapi 여부와 무관하게(호버 미리보기든 그냥 재생이든) 똑같이 겪는 걸 확인함.
+  // 무드보드 카드 렌더링(boardDoc() 기준)과 확장 미리보기(previewContextDoc/pDoc() 기준) 둘 다
+  // "지금 렌더링될 문서가 실제로 그 PiP 창의 문서인지"를 이걸로 판단해서 임베드 대신 썸네일로 폴백한다.
+  function isFloatingPipDoc(doc){
+    return !!(boardWindow && !boardWindow.closed && doc === boardWindow.document);
+  }
   const grid = $('grid');
   const overlay = $('overlay');
   const folderOverlay = $('folderOverlay');
@@ -1976,14 +1984,10 @@
       const item = items.find(i => i.id === p.itemId);
       if(!item) return '';
       // 유튜브 레퍼런스는 메인 화면 카드처럼 무드보드에서도 바로 재생해서 볼 수 있게 한다
-      // (호버하면 음소거로 재생, 벗어나면 정지). file://로 직접 연 경우엔 유튜브가 임베드를
-      // 막으므로(오류 153) 그때만 썸네일로 폴백. Document PiP 창(boardWindow) 안에서도 마찬가지로
-      // 폴백한다 — PiP 창은 실제 URL로 이동한 적 없는 about:blank 문서라서(DOM만 채워 넣음),
-      // 그 안에 심은 iframe이 enablejsapi로 유튜브에 요청을 보내면 리퍼러/오리진이 비어있는
-      // 걸로 보여 마찬가지로 오류 153이 뜬다. 메인 화면 카드·프리뷰 라이트박스는 실제 페이지
-      // 문서에서 열리므로(PiP 창 안에 있는 프리뷰 포함, 그건 enablejsapi를 안 씀) 영향 없다.
+      // (호버하면 음소거로 재생, 벗어나면 정지). file://로 직접 연 경우나 지금 이 카드가 실제
+      // PiP 창 문서 안에서 그려지는 경우엔 유튜브가 임베드를 막으므로(오류 153) 썸네일로 폴백.
       const vid = item.type === 'youtube' ? extractYouTubeId(item.url) : null;
-      const canEmbed = vid && location.protocol !== 'file:' && !boardWindow;
+      const canEmbed = vid && location.protocol !== 'file:' && !isFloatingPipDoc(boardDoc());
       const mediaHtml = canEmbed
         ? `<iframe src="${youtubeEmbedSrc(vid, { autoplayHover: true })}" title="${escapeHtml(item.title || 'YouTube video player')}" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" loading="lazy"></iframe>`
         : `<img src="${escapeHtml((item.thumbs && item.thumbs[0]) || item.url || '')}" alt="" draggable="false">`;
@@ -3308,13 +3312,19 @@
     let bodyHtml;
     if(item.type === 'youtube'){
       const vid = extractYouTubeId(item.url);
-      // file://로 직접 연 페이지에서는 유튜브가 임베드 재생을 거부한다(오류 153 등).
-      // http/https로 서빙될 때만 실제 iframe 재생을 시도하고, 아니면 썸네일로 폴백한다.
-      const canEmbed = vid && location.protocol !== 'file:';
+      // file://로 직접 연 페이지, 또는 이 프리뷰가 지금 실제 PiP 창 문서 안에서 열린 경우엔
+      // 유튜브가 임베드 재생을 거부한다(오류 153) — enablejsapi를 안 써도 마찬가지로 막힌다.
+      // 둘 다 아닐 때만(보통의 페이지 문서) 실제 iframe 재생을 시도하고, 아니면 썸네일로 폴백한다.
+      const isFileProtocol = location.protocol === 'file:';
+      const isPip = isFloatingPipDoc(pDoc());
+      const canEmbed = vid && !isFileProtocol && !isPip;
       const quadHtml = `<div class="preview-quad">${thumbs.map(t=>`<img src="${t}" alt="">`).join('')}</div>`;
+      let fallbackHint = '이 위치에서는 유튜브 임베드 재생이 막혀 있어요(오류 153). 아래 "원본 열기"로 유튜브에서 보세요.';
+      if(isPip) fallbackHint = '무드보드가 PiP 창으로 떠 있는 동안은 유튜브가 임베드 재생을 막아서(오류 153) 여기서는 재생할 수 없어요. 아래 "원본 열기"로 유튜브에서 보세요.';
+      else if(isFileProtocol) fallbackHint = '이 파일을 file://로 직접 열면 유튜브가 임베드 재생을 막아요(오류 153). 아래 "원본 열기"로 유튜브에서 보거나, 웹 서버로 배포해서 열면 여기서 바로 재생돼요.';
       bodyHtml = canEmbed
         ? `<div class="preview-embed"><iframe src="${youtubeEmbedSrc(vid)}" title="${escapeHtml(item.title || 'YouTube video player')}" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe></div>`
-        : `${quadHtml}<div class="field-hint" style="margin-top:8px;">이 파일을 file://로 직접 열면 유튜브가 임베드 재생을 막아요(오류 153). 아래 "원본 열기"로 유튜브에서 보거나, 웹 서버로 배포해서 열면 여기서 바로 재생돼요.</div>`;
+        : `${quadHtml}<div class="field-hint" style="margin-top:8px;">${fallbackHint}</div>`;
     } else {
       const src = thumbs[0] || '';
       bodyHtml = src ? `<div class="preview-single"><img src="${src}" alt=""></div>` : '';
