@@ -27,7 +27,7 @@ Tauri로 Windows exe도 한 번 만들어봤지만(독립 실행 파일 + NSIS �
   `src-tauri/target/`만 등록되어 있고, `src-tauri/` 자체는 그냥 git add를 안 함).
   다른 컴퓨터에는 이 폴더가 없음 — exe를 다시 만들려면 Rust부터 새로 설치해야 함.
 
-## 지금까지 병합된 작업 (PR #1~#31 + 노트북 세션의 브랜치 병합 1건, 전부 main에 병합됨)
+## 지금까지 병합된 작업 (PR #1~#32 + 노트북 세션의 브랜치 병합 1건, 전부 main에 병합됨)
 
 **PR #1~#5** (초기 단계):
 1. README.md 추가 (첫 PR 연습)
@@ -280,7 +280,28 @@ URL을 열면 localhost로 서빙할 때와 달리 진짜 외부 네트워크(yo
 확인함 — 외부 API/임베드가 관련된 버그는 로컬 HttpListener보다 실제 배포 사이트에 직접
 접속해서 검증하는 게 더 정확함.
 
-로컬 `main`은 PR #31 병합 후 `0fd860c`까지 동기화 확인됨.
+**PR #32 (PiP 창 다이얼로그/캡처가 엉뚱한 창으로 가는 문제 수정 + 전체 코드 감사 — 사용자
+요청: "PIP로 뜨면서 패치 적용이 안되는 느낌, 전체 코드 훑고 최적화")**: PiP 템플릿
+(`ensureBoardWindow`/`wirePipBoardControls`)과 정적 모달의 마크업·하단 wiring을 한 줄씩
+대조했지만 완전히 일치 — 빠진 wiring은 없었음. **핵심 버그**: 이 앱 코드는 전부 메인 페이지
+스크립트 하나에서 돌고 `boardWindow`의 DOM을 밖에서만 조작하기 때문에, board 관련 함수에서
+그냥 `alert()`/`confirm()`/`prompt()`를 부르면 지금 다루는 DOM이 어느 창에 있든 상관없이
+항상 메인 창에 뜸 — PiP로 띄워놓고 메모 툴바의 링크/폰트 불러오기/캡처를 누르면 사용자가
+안 보고 있는 메인 창에 다이얼로그가 떠서 "패치가 안 먹힌다"처럼 느껴졌을 것으로 추정.
+`applyNoteLink`/`loadFontsForNoteToolbar`/`captureBoardAsImage`의 alert/prompt를 전부
+`boardDoc().defaultView` 기준으로 고침(파일의 나머지 alert/confirm/prompt는 전부 감사해서
+메인 페이지 전용 컨텍스트만 있는 것 확인, 그대로 둠). **두 번째 관련 버그**:
+`loadHtml2Canvas()`가 항상 메인 창에만 로드했는데 캡처 대상 캔버스는 PiP 창 문서에 있을 수
+있어서 창 간 라이브러리/DOM 불일치로 캡처가 깨질 수 있었음 — 창(window)별 WeakMap 캐싱으로
+고침. 그 외: `sanitizeNoteElement`/메모 폰트 select의 임시 `<option>`이 문서 소유권 안 맞추고
+만들던 걸(브라우저의 암묵적 cross-document 노드 입양에 기대고 있었음) `ownerDocument` 기준으로
+고침, `exportData()`/`writeToFile()`의 중복 JSON 생성을 `serializeAppData()`로 통합. 전체
+~200개 함수 사용 횟수·CSS 클래스 참조를 훑어서 죽은 코드/미사용 CSS도 찾아봤는데 발견된 건
+없음(코드베이스가 이미 깨끗했음). `boardWindow`가 실제로 true인 분기는 이 sandbox에서 구조적으로
+도달 불가(PR #27/#29와 동일한 한계) — 다이얼로그가 실제 PiP 창에 뜨는지는 사용자가 실제
+브라우저에서 PiP로 띄운 상태로 확인 필요.
+
+로컬 `main`은 PR #32 병합 후 `92c0277`까지 동기화 확인됨.
 
 ## 중요한 결정/맥락 (git 로그엔 안 보이는 부분)
 - Windows Smart App Control이 Tauri/Rust 빌드를 막은 적 있음(사용자가 직접 설정 껐음 — 보안 설정은
