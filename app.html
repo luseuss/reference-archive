@@ -350,6 +350,12 @@
   }
   .board-card.selected{ outline:2px solid var(--accent); outline-offset:2px; }
   .board-card.grouped{ box-shadow:0 0 0 1px var(--accent) inset, var(--shadow); }
+  /* 그룹으로 묶인 카드들을 감싸는 영역 표시. z-index:0으로 카드(항상 1 이상) 뒤에 깔리고,
+     pointer-events:none이라 드래그·클릭·마퀴 선택에 전혀 관여하지 않는다. */
+  .board-group-frame{
+    position:absolute; z-index:0; pointer-events:none; border-radius:10px;
+    border:1.5px dashed var(--accent); background:color-mix(in srgb, var(--accent) 6%, transparent);
+  }
   .board-select-rect{
     position:absolute; border:1px solid var(--accent); background:color-mix(in srgb, var(--accent) 15%, transparent);
     pointer-events:none; z-index:998;
@@ -1946,7 +1952,14 @@
     updateBoardCanvasSize();
     const canvas = $b('boardCanvas');
     const placements = boardPlacements.filter(p => p.sceneId === activeSceneId);
-    canvas.innerHTML = placements.map(p => {
+    // 그룹마다 그 카드들을 감싸는 영역을 카드보다 먼저(=아래에) 그린다.
+    const groupIds = [...new Set(placements.filter(p => p.groupId).map(p => p.groupId))];
+    const frameHtml = groupIds.map(gid => {
+      const box = groupBoundingBox(gid);
+      if(!box) return '';
+      return `<div class="board-group-frame" data-group-frame="${gid}" style="left:${box.x}px; top:${box.y}px; width:${box.w}px; height:${box.h}px;"></div>`;
+    }).join('');
+    canvas.innerHTML = frameHtml + placements.map(p => {
       const extraCls = (selectedPlacementIds.has(p.id) ? ' selected' : '') + (p.groupId ? ' grouped' : '');
       if(p.type === 'note'){
         const noteFontSize = p.fontSize || NOTE_FONT_SIZE_DEFAULT;
@@ -2092,6 +2105,22 @@
       const btn = $b(id);
       if(btn) btn.disabled = n < 2;
     });
+  }
+
+  // 그룹에 속한 카드들을 감싸는 바운딩 박스(여유 패딩 포함)를 계산한다. renderBoard()가 매번
+  // 새로 그리고, 드래그/리사이즈 중에도 최소한의 계산으로 실시간 갱신하는 데 같이 쓰인다.
+  const GROUP_FRAME_PADDING = 14;
+  function groupBoundingBox(groupId){
+    const members = boardPlacements.filter(p => p.sceneId === activeSceneId && p.groupId === groupId);
+    if(members.length === 0) return null;
+    const minX = Math.min(...members.map(p => p.x));
+    const minY = Math.min(...members.map(p => p.y));
+    const maxX = Math.max(...members.map(p => p.x + p.w));
+    const maxY = Math.max(...members.map(p => p.y + p.h));
+    return {
+      x: minX - GROUP_FRAME_PADDING, y: minY - GROUP_FRAME_PADDING,
+      w: (maxX - minX) + GROUP_FRAME_PADDING * 2, h: (maxY - minY) + GROUP_FRAME_PADDING * 2
+    };
   }
 
   function groupSelectedPlacements(){
@@ -2648,7 +2677,15 @@
       const card = canvas && canvas.querySelector(`[data-board-card="${id}"]`);
       if(card) card.style.zIndex = p.z;
     });
-    dragState = { primaryId: placementId, ids, startX: e.clientX, startY: e.clientY, lastClientX: e.clientX, lastClientY: e.clientY, orig, moved: false };
+    // 드래그 중인 카드들이 속한 그룹(들)의 영역 표시도 같이 따라 움직이도록, 시작 시점의
+    // 프레임 위치를 기록해둔다(그룹은 항상 통째로 같이 끌리므로 dx/dy만큼만 옮기면 된다).
+    const groupIdsInDrag = [...new Set(ids.map(id => (boardPlacements.find(x => x.id === id) || {}).groupId).filter(Boolean))];
+    const groupFrameOrig = {};
+    groupIdsInDrag.forEach(gid => {
+      const frameEl = canvas && canvas.querySelector(`[data-group-frame="${gid}"]`);
+      if(frameEl) groupFrameOrig[gid] = { x: parseFloat(frameEl.style.left), y: parseFloat(frameEl.style.top) };
+    });
+    dragState = { primaryId: placementId, ids, startX: e.clientX, startY: e.clientY, lastClientX: e.clientX, lastClientY: e.clientY, orig, moved: false, groupIdsInDrag, groupFrameOrig };
     boardDoc().addEventListener('mousemove', onDragMove);
     boardDoc().addEventListener('mouseup', onDragEnd);
     startEdgeAutoScroll(
@@ -2710,6 +2747,12 @@
       p.x = o.x + dx; p.y = o.y + dy;
       const card = canvas && canvas.querySelector(`[data-board-card="${id}"]`);
       if(card){ card.style.left = p.x + 'px'; card.style.top = p.y + 'px'; }
+    });
+    // 그룹 영역 표시도 카드들과 같은 dx/dy만큼 같이 옮긴다.
+    dragState.groupIdsInDrag.forEach(gid => {
+      const orig = dragState.groupFrameOrig[gid];
+      const frameEl = canvas && canvas.querySelector(`[data-group-frame="${gid}"]`);
+      if(orig && frameEl){ frameEl.style.left = (orig.x + dx) + 'px'; frameEl.style.top = (orig.y + dy) + 'px'; }
     });
     // 카드를 캔버스 끝까지 옮기면 그만큼 범위가 바로 늘어나 보이게(드래그 도중 실시간으로).
     updateBoardCanvasSize();
@@ -2775,8 +2818,18 @@
     if(snapY.guidePos !== null) showBoardGuide('y', snapY.guidePos);
 
     p.w = w; p.h = h;
-    const card = $b('boardCanvas').querySelector(`[data-board-card="${resizeState.id}"]`);
+    const canvas = $b('boardCanvas');
+    const card = canvas.querySelector(`[data-board-card="${resizeState.id}"]`);
     if(card){ card.style.width = p.w + 'px'; card.style.height = p.h + 'px'; }
+    // 그룹에 속한 카드를 리사이즈하면 그 그룹의 영역도 같이 늘었다 줄었다 한다.
+    if(p.groupId){
+      const box = groupBoundingBox(p.groupId);
+      const frameEl = canvas.querySelector(`[data-group-frame="${p.groupId}"]`);
+      if(box && frameEl){
+        frameEl.style.left = box.x + 'px'; frameEl.style.top = box.y + 'px';
+        frameEl.style.width = box.w + 'px'; frameEl.style.height = box.h + 'px';
+      }
+    }
     updateBoardCanvasSize();
   }
   function onResizeEnd(){
