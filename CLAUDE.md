@@ -27,7 +27,7 @@ Tauri로 Windows exe도 한 번 만들어봤지만(독립 실행 파일 + NSIS �
   `src-tauri/target/`만 등록되어 있고, `src-tauri/` 자체는 그냥 git add를 안 함).
   다른 컴퓨터에는 이 폴더가 없음 — exe를 다시 만들려면 Rust부터 새로 설치해야 함.
 
-## 지금까지 병합된 작업 (PR #1~#30 + 노트북 세션의 브랜치 병합 1건, 전부 main에 병합됨)
+## 지금까지 병합된 작업 (PR #1~#31 + 노트북 세션의 브랜치 병합 1건, 전부 main에 병합됨)
 
 **PR #1~#5** (초기 단계):
 1. README.md 추가 (첫 PR 연습)
@@ -260,7 +260,27 @@ iframe(`enablejsapi=1`) 자체는 잘 뜨는데 `mouseenter` 즉시 `playVideo`�
 없고 youtube.com 네트워크도 없어서, 큐잉/무시/flush 전 과정이 에러 없이 도는 것까지만 확인—
 실제 재생 여부는 사용자가 확인 필요.
 
-로컬 `main`은 PR #30 병합 후 `7ae2101`까지 동기화 확인됨.
+**PR #31 (유튜브 호버 재생을 postMessage 대신 src 교체 방식으로 — PR #30 후속, 사용자가 실제
+배포 사이트에서 재보고)**: 이번엔 synthetic 이벤트가 아니라 실제 배포 사이트(GitHub Pages)와
+로컬 재빌드본에 진짜 브라우저 클릭/호버로 직접 붙어서 조사함. 모든 origin의 postMessage를
+로깅하는 진단 리스너로, `enablejsapi` iframe에서 `onReady`는커녕 실제 재생이 시작된 뒤에도
+메시지가 단 하나도 안 오는 것 확인(PR #30의 대기 로직 자체는 맞았지만 애초에 채널이 안
+열리고 있었음 — `origin=` 파라미터를 추가해도 안 됨, 원인 특정은 못 함, 광고차단류 확장이나
+브라우저 정책일 가능성). 별도로 메인 그리드 카드는 iframe에 `pointer-events:none`이 없어서
+실제 마우스 호버 자체가 부모 요소까지 전달이 안 되는 것도 발견. postMessage를 걷어내고
+호버 시 iframe src를 `&autoplay=1` 붙인 것으로 바꿔치기(mute=1이라 브라우저 정책상 허용),
+벗어나면 저장해둔 원래 src로 되돌리는(자연스럽게 리셋됨) 방식으로 교체. 그리드 iframe에도
+`pointer-events:none` 추가(controls=0이라 안에 클릭할 게 없어서 부작용 없음, 클릭은 부모의
+`data-preview`로 열림). **이번엔 실제 배포 사이트에 진짜 마우스로 호버해서 그리드·보드
+카드 둘 다 실제로(움직이는 영상으로) 재생되는 것까지 직접 확인함** — PR #26/#30과 달리
+"검증 불가, 사용자가 확인 필요"가 아니라 실제로 재생 확인 완료.
+
+**테스트 방법론 참고**: 이번에 `mcp__Claude_Browser__preview_start`로 실제 `https://` 배포
+URL을 열면 localhost로 서빙할 때와 달리 진짜 외부 네트워크(youtube.com 등)에 접근되는 걸
+확인함 — 외부 API/임베드가 관련된 버그는 로컬 HttpListener보다 실제 배포 사이트에 직접
+접속해서 검증하는 게 더 정확함.
+
+로컬 `main`은 PR #31 병합 후 `0fd860c`까지 동기화 확인됨.
 
 ## 중요한 결정/맥락 (git 로그엔 안 보이는 부분)
 - Windows Smart App Control이 Tauri/Rust 빌드를 막은 적 있음(사용자가 직접 설정 껐음 — 보안 설정은
