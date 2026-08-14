@@ -31,6 +31,10 @@ Tauri로 Windows exe도 몇 번 만들어봤음(독립 실행 파일 + NSIS 설�
   `app.html`이 자주 바뀌므로 빌드 전 항상 최신인지 확인) → `cargo tauri build`(release 프로필,
   50초 안팎) → 결과물은 `src-tauri/target/release/reference-archive.exe`(독립 실행 파일)와
   `src-tauri/target/release/bundle/nsis/레퍼런스 아카이브_0.1.0_x64-setup.exe`(설치 프로그램).
+- **GitHub Releases로 배포 중**: https://github.com/luseuss/reference-archive/releases/tag/desktop-v0.1.0
+  (태그 `desktop-v0.1.0`)에 설치 프로그램 + 포터블 exe 둘 다 올려둠. 공개 저장소라 릴리스도
+  공개 다운로드 가능 — 새로 빌드해서 갱신하고 싶으면 `gh release upload desktop-v0.1.0 <파일> --clobber`
+  (또는 버전이 바뀌면 새 태그로 `gh release create`).
 
 ## 업데이트 로그
 PR 단위 변경 이력(무엇을 왜 어떻게 고쳤는지, 테스트 방법과 한계)은 `update.md`에 기록합니다.
