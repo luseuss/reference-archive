@@ -319,8 +319,19 @@
   .board-context-menu .ctx-item-select:hover{ background:none; }
   .board-context-menu .ctx-item-select select{
     font:inherit; font-size:12px; padding:2px 4px; border-radius:6px; border:1px solid var(--border);
+    background:var(--surface); color:var(--text); max-width:150px;
+  }
+  .board-context-menu .ctx-size-row, .board-context-menu .ctx-font-row{ display:flex; align-items:center; gap:4px; }
+  .board-context-menu .ctx-size-row input[type=number]{
+    width:52px; font:inherit; font-size:12px; padding:2px 4px; border-radius:6px; border:1px solid var(--border);
     background:var(--surface); color:var(--text);
   }
+  .board-context-menu .ctx-font-load-btn{
+    flex:0 0 auto; padding:2px 7px; font-size:12px; border-radius:6px; border:1px solid var(--border);
+    background:var(--surface); color:var(--text); cursor:pointer;
+  }
+  .board-context-menu .ctx-font-load-btn:hover{ background:var(--accent-soft); }
+  .board-context-menu .ctx-font-load-btn:disabled{ opacity:.5; cursor:wait; }
   .board-context-menu .ctx-sep{ height:1px; background:var(--border); margin:5px 2px; }
   .board-canvas-wrap{ flex:1; overflow:auto; position:relative; background:var(--bg); }
   .board-canvas-wrap.space-pan{ cursor:grab; }
@@ -1766,20 +1777,39 @@
 
   // ---------- note font size / family presets (2번 기능) ----------
   const NOTE_FONT_SIZE_DEFAULT = 12.5; // 기존 .board-note-text 기본값과 동일
-  const NOTE_FONT_SIZES = [
-    { value: 10, label: '작게' },
-    { value: 12.5, label: '보통' },
-    { value: 16, label: '크게' },
-  ];
   const NOTE_FONT_PRESETS = [
     { id: 'sans', label: '기본 (고딕)', stack: '-apple-system, BlinkMacSystemFont, "Pretendard", "Apple SD Gothic Neo", "Segoe UI", sans-serif' },
     { id: 'serif', label: '명조', stack: '"Batang", "Apple Myungjo", "Nanum Myeongjo", Georgia, serif' },
     { id: 'hand', label: '손글씨', stack: '"Segoe Print", "Bradley Hand", "Comic Sans MS", cursive' },
     { id: 'mono', label: '고정폭', stack: '"Consolas", "SFMono-Regular", "Menlo", monospace' },
   ];
+  // note.fontFamily는 위 프리셋 id 이거나(기존 데이터 호환), 로컬 폰트 목록에서 고른 실제
+  // 폰트 이름 문자열(예: "Comic Sans MS")이다. 프리셋이면 그 스택을, 아니면 그 이름을 그대로
+  // 따옴표로 감싸 CSS font-family 값으로 만든다(일반 sans-serif 폴백을 붙여둠).
   function noteFontStack(id){
     const preset = NOTE_FONT_PRESETS.find(f => f.id === id);
-    return preset ? preset.stack : NOTE_FONT_PRESETS[0].stack;
+    if(preset) return preset.stack;
+    if(typeof id === 'string' && id.trim()) return `"${id}", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
+    return NOTE_FONT_PRESETS[0].stack;
+  }
+
+  // ---------- 컴퓨터에 설치된 폰트 불러오기 (Local Font Access API, Chromium 계열 전용) ----------
+  // 이 프로젝트가 이미 쓰고 있는 File System Access API처럼 사용자 제스처(버튼 클릭)에서만
+  // 호출 가능하고 origin당 한 번 권한을 물어본다. 한 번 불러오면 세션 동안 캐싱해서 컨텍스트
+  // 메뉴를 다시 열 때마다 다시 묻지 않게 한다.
+  let localFontsCache = null;
+  async function loadLocalFonts(forceReload){
+    if(localFontsCache && !forceReload) return localFontsCache;
+    if(!('queryLocalFonts' in window)) return null;
+    try{
+      const fonts = await window.queryLocalFonts();
+      const names = [...new Set(fonts.map(f => f.family))].sort((a, b) => a.localeCompare(b, 'ko'));
+      localFontsCache = names;
+      return names;
+    } catch(e){
+      console.error('시스템 폰트를 불러오지 못했어요(권한 거부 등)', e);
+      return null;
+    }
   }
 
   // ---------- 캔버스 크기를 배치된 카드에 맞춰 유동적으로 늘린다 ----------
@@ -2083,26 +2113,66 @@
   // 메모 카드 하나만 선택된 상태로 우클릭하면 뜨는 글자 크기/폰트 인라인 컨트롤(2번 기능).
   // 선택하는 즉시 바로 적용되는 미리보기 방식이라 별도의 "적용" 버튼은 없다.
   function noteFontControlsHtml(note){
-    const sizeOptions = NOTE_FONT_SIZES.map(s => `<option value="${s.value}">${s.label}</option>`).join('');
-    const familyOptions = NOTE_FONT_PRESETS.map(f => `<option value="${f.id}">${escapeHtml(f.label)}</option>`).join('');
+    const presetOptions = NOTE_FONT_PRESETS.map(f => `<option value="${f.id}">${escapeHtml(f.label)}</option>`).join('');
+    const systemNames = localFontsCache || [];
+    const systemOptions = systemNames.length
+      ? `<optgroup label="내 컴퓨터 폰트">${systemNames.map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join('')}</optgroup>`
+      : '';
     return [
       '<div class="ctx-sep"></div>',
-      `<div class="ctx-item ctx-item-select"><span>글자 크기</span><select data-ctx-note-fontsize>${sizeOptions}</select></div>`,
-      `<div class="ctx-item ctx-item-select"><span>폰트</span><select data-ctx-note-fontfamily>${familyOptions}</select></div>`,
+      `<div class="ctx-item ctx-item-select"><span>글자 크기</span><span class="ctx-size-row"><input type="number" data-ctx-note-fontsize min="6" max="200" step="1" value="${note.fontSize || NOTE_FONT_SIZE_DEFAULT}">px</span></div>`,
+      `<div class="ctx-item ctx-item-select"><span>폰트</span><span class="ctx-font-row">` +
+        `<select data-ctx-note-fontfamily><optgroup label="프리셋">${presetOptions}</optgroup>${systemOptions}</select>` +
+        `<button type="button" class="ctx-font-load-btn" data-ctx-note-fontload title="내 컴퓨터에 설치된 폰트 불러오기">💻</button>` +
+      `</span></div>`,
     ].join('');
   }
   function wireNoteFontControls(menu, note){
-    const sizeSel = menu.querySelector('[data-ctx-note-fontsize]');
-    if(sizeSel){
-      sizeSel.value = String(note.fontSize || NOTE_FONT_SIZE_DEFAULT);
-      sizeSel.addEventListener('click', (e) => e.stopPropagation());
-      sizeSel.addEventListener('change', () => setNoteFontSize(note.id, Number(sizeSel.value)));
+    const sizeInput = menu.querySelector('[data-ctx-note-fontsize]');
+    if(sizeInput){
+      sizeInput.addEventListener('click', (e) => e.stopPropagation());
+      sizeInput.addEventListener('input', () => {
+        const v = Math.round(Number(sizeInput.value));
+        if(!Number.isFinite(v) || v <= 0) return; // 입력 중인 값이 아직 유효하지 않으면 그냥 기다린다
+        setNoteFontSize(note.id, v);
+      });
     }
     const famSel = menu.querySelector('[data-ctx-note-fontfamily]');
     if(famSel){
+      // note.fontFamily가 프리셋 id면 그 옵션이 이미 있고, 시스템 폰트 이름인데 아직 목록을
+      // 안 불러왔거나 그 사이 목록이 바뀌었으면 select에 없을 수 있으니 임시 옵션을 하나 끼워
+      // 넣어서 지금 값이 항상 선택된 상태로 보이게 한다.
+      if(note.fontFamily && ![...famSel.options].some(o => o.value === note.fontFamily)){
+        const opt = document.createElement('option');
+        opt.value = note.fontFamily;
+        opt.textContent = note.fontFamily;
+        famSel.appendChild(opt);
+      }
       famSel.value = note.fontFamily || NOTE_FONT_PRESETS[0].id;
       famSel.addEventListener('click', (e) => e.stopPropagation());
       famSel.addEventListener('change', () => setNoteFontFamily(note.id, famSel.value));
+    }
+    const loadBtn = menu.querySelector('[data-ctx-note-fontload]');
+    if(loadBtn){
+      loadBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        if(!('queryLocalFonts' in window)){
+          alert('이 브라우저는 컴퓨터에 설치된 폰트 불러오기를 지원하지 않아요. 최신 크롬/엣지 등 Chromium 계열 브라우저에서만 가능해요.');
+          return;
+        }
+        loadBtn.disabled = true;
+        loadBtn.textContent = '…';
+        const names = await loadLocalFonts(true);
+        if(!names){
+          loadBtn.disabled = false;
+          loadBtn.textContent = '💻';
+          alert('폰트를 불러오지 못했어요. 권한 요청을 허용했는지 확인해주세요.');
+          return;
+        }
+        // 같은 위치에서 메뉴를 다시 그려서 새로 불러온 폰트 목록을 select에 반영한다.
+        const left = parseFloat(menu.style.left), top = parseFloat(menu.style.top);
+        renderBoardContextMenu(left, top);
+      });
     }
   }
   function setNoteFontSize(placementId, size){
@@ -3294,7 +3364,10 @@
           ...base,
           text: typeof p.text === 'string' ? p.text : '',
           fontSize: (typeof p.fontSize === 'number' && p.fontSize > 0) ? p.fontSize : NOTE_FONT_SIZE_DEFAULT,
-          fontFamily: (typeof p.fontFamily === 'string' && NOTE_FONT_PRESETS.some(f => f.id === p.fontFamily)) ? p.fontFamily : NOTE_FONT_PRESETS[0].id
+          // 프리셋 id뿐 아니라 로컬 폰트에서 고른 임의의 폰트 이름 문자열도 그대로 허용한다
+          // (noteFontStack이 둘 다 처리함) — 여기서 프리셋으로만 제한하면 시스템 폰트 선택이
+          // 저장 파일을 다시 열 때마다 기본값으로 되돌아가 버린다.
+          fontFamily: (typeof p.fontFamily === 'string' && p.fontFamily.trim()) ? p.fontFamily : NOTE_FONT_PRESETS[0].id
         } : { ...base, itemId: p.itemId };
       });
     return {
