@@ -325,7 +325,14 @@
   .board-canvas-wrap{ flex:1; overflow:auto; position:relative; background:var(--bg); }
   .board-canvas-wrap.space-pan{ cursor:grab; }
   .board-canvas-wrap.panning{ cursor:grabbing; user-select:none; }
-  .board-canvas{ position:relative; width:2400px; height:1600px; transform-origin:0 0; }
+  /* width/height는 JS(updateBoardCanvasSize)가 배치된 카드에 맞춰 인라인 스타일로 계속
+     갱신한다 — 여기 값은 아직 JS가 안 돌았을 때(첫 렌더 전)의 기본값일 뿐. surface 배경 +
+     안쪽 테두리로 "여기까지가 드래그 가능한 범위"가 눈에 보이게 한다(box-shadow는 레이아웃
+     크기에 영향을 안 줘서 좌표 계산과 어긋나지 않는다). */
+  .board-canvas{
+    position:relative; width:2400px; height:1600px; transform-origin:0 0;
+    background:var(--surface); box-shadow:inset 0 0 0 1px var(--border);
+  }
   .board-card{
     position:absolute; border-radius:8px; overflow:hidden; box-shadow:var(--shadow);
     border:1px solid var(--border); background:var(--surface); cursor:move; user-select:none;
@@ -1775,7 +1782,31 @@
     return preset ? preset.stack : NOTE_FONT_PRESETS[0].stack;
   }
 
+  // ---------- 캔버스 크기를 배치된 카드에 맞춰 유동적으로 늘린다 ----------
+  // 카드를 옮기다 화면 가장자리 자동 스크롤(PR #22)로 캔버스 밖까지 나가도 드래그 자체는
+  // 이어지지만, 그 "밖"이 눈에 안 보여서 범위가 어디까지인지 알 수 없었다. 이제 캔버스 자체를
+  // 항상 실제 배치보다 넉넉히(PADDING만큼) 더 크게 유지해서, 눈에 보이는 카드 영역
+  // (surface 배경 + 안쪽 테두리) 자체가 "지금 드래그 가능한 범위"가 되고, 카드를 그 끝까지
+  // 옮기면 범위가 그만큼 더 늘어난다. 최소 크기는 기존 고정 크기(2400×1600)를 그대로 바닥으로 둔다.
+  const BOARD_CANVAS_MIN_W = 2400, BOARD_CANVAS_MIN_H = 1600;
+  const BOARD_CANVAS_PADDING = 600;
+  function updateBoardCanvasSize(){
+    const canvas = $b('boardCanvas');
+    if(!canvas) return;
+    const placements = boardPlacements.filter(p => p.sceneId === activeSceneId);
+    let maxX = 0, maxY = 0;
+    placements.forEach(p => {
+      maxX = Math.max(maxX, p.x + p.w);
+      maxY = Math.max(maxY, p.y + p.h);
+    });
+    const w = Math.max(BOARD_CANVAS_MIN_W, maxX + BOARD_CANVAS_PADDING);
+    const h = Math.max(BOARD_CANVAS_MIN_H, maxY + BOARD_CANVAS_PADDING);
+    canvas.style.width = w + 'px';
+    canvas.style.height = h + 'px';
+  }
+
   function renderBoard(){
+    updateBoardCanvasSize();
     const canvas = $b('boardCanvas');
     const placements = boardPlacements.filter(p => p.sceneId === activeSceneId);
     canvas.innerHTML = placements.map(p => {
@@ -2331,6 +2362,8 @@
       const card = canvas && canvas.querySelector(`[data-board-card="${id}"]`);
       if(card){ card.style.left = p.x + 'px'; card.style.top = p.y + 'px'; }
     });
+    // 카드를 캔버스 끝까지 옮기면 그만큼 범위가 바로 늘어나 보이게(드래그 도중 실시간으로).
+    updateBoardCanvasSize();
   }
   function onDragEnd(){
     boardDoc().removeEventListener('mousemove', onDragMove);
@@ -2395,6 +2428,7 @@
     p.w = w; p.h = h;
     const card = $b('boardCanvas').querySelector(`[data-board-card="${resizeState.id}"]`);
     if(card){ card.style.width = p.w + 'px'; card.style.height = p.h + 'px'; }
+    updateBoardCanvasSize();
   }
   function onResizeEnd(){
     boardDoc().removeEventListener('mousemove', onResizeMove);
