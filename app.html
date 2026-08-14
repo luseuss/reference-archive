@@ -358,6 +358,9 @@
   .board-guide.v{ top:0; bottom:0; width:1px; }
   .board-guide.h{ left:0; right:0; height:1px; }
   .board-card img{ width:100%; height:100%; object-fit:contain; display:block; pointer-events:none; }
+  /* 이미지처럼 pointer-events:none — 그래야 카드 위 어디를 눌러도(재생 중인 영상 위여도)
+     드래그·클릭-미리보기가 그대로 동작한다. 재생/정지는 호버로만 postMessage로 제어한다. */
+  .board-card iframe{ width:100%; height:100%; border:0; display:block; pointer-events:none; }
   .board-card .board-remove{
     position:absolute; top:4px; right:4px; width:20px; height:20px; border-radius:50%; border:none;
     background:rgba(0,0,0,.6); color:#fff; font-size:11px; cursor:pointer; padding:0; line-height:1; z-index:1;
@@ -1082,6 +1085,21 @@
 
   function ytThumbs(id){
     return [0,1,2,3].map(n => `https://img.youtube.com/vi/${id}/${n}.jpg`);
+  }
+
+  // 호버 미리보기(그리드 카드·무드보드 카드)는 채널명/제목이 뜨는 유튜브 기본 상단 오버레이가
+  // 작은 카드를 심하게 가리길래 controls=0으로 아예 꺼버린다(어차피 음소거 자동재생용이라
+  // 되감기·일시정지 컨트롤이 필요 없다). 프리뷰 라이트박스는 실제로 컨트롤을 쓰고 싶을 수 있어
+  // controls는 유지하되, modestbranding·rel·주석 끄기로 곁가지 UI만 최대한 줄인다.
+  function youtubeEmbedSrc(vid, opts){
+    const autoplayHover = !!(opts && opts.autoplayHover);
+    const params = new URLSearchParams({ modestbranding: '1', rel: '0', iv_load_policy: '3' });
+    if(autoplayHover){
+      params.set('enablejsapi', '1');
+      params.set('mute', '1');
+      params.set('controls', '0');
+    }
+    return `https://www.youtube.com/embed/${vid}?${params.toString()}`;
   }
 
   // ---------- parts (top menu: 동영상 / 이미지 / 파티클) ----------
@@ -1944,9 +1962,16 @@
       }
       const item = items.find(i => i.id === p.itemId);
       if(!item) return '';
-      const src = (item.thumbs && item.thumbs[0]) || item.url || '';
+      // 유튜브 레퍼런스는 메인 화면 카드처럼 무드보드에서도 바로 재생해서 볼 수 있게 한다
+      // (호버하면 음소거로 재생, 벗어나면 정지). file://로 직접 연 경우엔 유튜브가 임베드를
+      // 막으므로(오류 153) 그때만 썸네일로 폴백.
+      const vid = item.type === 'youtube' ? extractYouTubeId(item.url) : null;
+      const canEmbed = vid && location.protocol !== 'file:';
+      const mediaHtml = canEmbed
+        ? `<iframe src="${youtubeEmbedSrc(vid, { autoplayHover: true })}" title="${escapeHtml(item.title || 'YouTube video player')}" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" loading="lazy"></iframe>`
+        : `<img src="${escapeHtml((item.thumbs && item.thumbs[0]) || item.url || '')}" alt="" draggable="false">`;
       return `<div class="board-card${extraCls}" data-board-card="${p.id}" style="left:${p.x}px; top:${p.y}px; width:${p.w}px; height:${p.h}px; z-index:${p.z};">
-        <img src="${escapeHtml(src)}" alt="" draggable="false">
+        ${mediaHtml}
         <button type="button" class="board-remove" data-board-remove="${p.id}" title="보드에서 제거">✕</button>
         <div class="board-resize" data-board-resize="${p.id}"></div>
       </div>`;
@@ -2001,6 +2026,13 @@
       el.addEventListener('input', () => syncNoteFromEditable(el));
     });
     wireNoteToolbars(canvas);
+    // 유튜브 카드는 메인 화면 카드와 같은 방식으로 호버 시 음소거 재생, 벗어나면 정지한다.
+    canvas.querySelectorAll('.board-card iframe').forEach(iframe => {
+      const card = iframe.closest('[data-board-card]');
+      if(!card) return;
+      card.addEventListener('mouseenter', () => ytPost(iframe, 'playVideo'));
+      card.addEventListener('mouseleave', () => ytPost(iframe, 'stopVideo'));
+    });
     renderBoardSelectionBar();
   }
 
@@ -2795,13 +2827,19 @@
     }
     const src = (item.thumbs && item.thumbs[0]) || item.url || '';
     let w = BOARD_DEFAULT_MAX, h = BOARD_DEFAULT_MAX;
-    try{
-      const img = await loadImageEl(src);
-      const scale = Math.min(1, BOARD_DEFAULT_MAX / Math.max(img.naturalWidth, img.naturalHeight));
-      w = Math.max(MIN_BOARD_SIZE, Math.round(img.naturalWidth * scale));
-      h = Math.max(MIN_BOARD_SIZE, Math.round(img.naturalHeight * scale));
-    } catch(e){
-      console.error('보드에 올릴 이미지 크기를 읽지 못해 기본 정사각형 크기를 사용해요', e);
+    if(item.type === 'youtube'){
+      // 유튜브는 실제 재생 비율(16:9)로 카드를 잡는다 — 썸네일 이미지 자체의 원본 비율(보통 4:3)로
+      // 잡으면 무드보드에서 재생될 임베드 화면이 눌려 보인다.
+      h = Math.max(MIN_BOARD_SIZE, Math.round(BOARD_DEFAULT_MAX * 9 / 16));
+    } else {
+      try{
+        const img = await loadImageEl(src);
+        const scale = Math.min(1, BOARD_DEFAULT_MAX / Math.max(img.naturalWidth, img.naturalHeight));
+        w = Math.max(MIN_BOARD_SIZE, Math.round(img.naturalWidth * scale));
+        h = Math.max(MIN_BOARD_SIZE, Math.round(img.naturalHeight * scale));
+      } catch(e){
+        console.error('보드에 올릴 이미지 크기를 읽지 못해 기본 정사각형 크기를 사용해요', e);
+      }
     }
     let x, y;
     if(typeof atX === 'number' && typeof atY === 'number'){
@@ -3151,9 +3189,8 @@
       const canEmbed = vid && location.protocol !== 'file:';
       if(canEmbed){
         thumbClass = 'thumb video-embed';
-        // enablejsapi로 postMessage 명령을 받게 하고, mute를 켜둬야 호버만으로 재생해도
-        // 브라우저 자동재생 정책에 안 걸린다(음소거 자동재생은 허용됨).
-        thumbHtml = `<iframe src="https://www.youtube.com/embed/${vid}?enablejsapi=1&mute=1" title="${escapeHtml(item.title || 'YouTube video player')}" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" loading="lazy" allowfullscreen></iframe>`;
+        // mute를 켜둬야 호버만으로 재생해도 브라우저 자동재생 정책에 안 걸린다(음소거 자동재생은 허용됨).
+        thumbHtml = `<iframe src="${youtubeEmbedSrc(vid, { autoplayHover: true })}" title="${escapeHtml(item.title || 'YouTube video player')}" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" loading="lazy" allowfullscreen></iframe>`;
       } else {
         thumbClass = 'thumb fixed';
         thumbHtml = `<div class="thumb-quad">${thumbs.map(t=>`<img src="${t}" loading="lazy" alt="">`).join('')}</div><span class="play-badge">▶ YouTube</span>`;
@@ -3219,7 +3256,7 @@
       const canEmbed = vid && location.protocol !== 'file:';
       const quadHtml = `<div class="preview-quad">${thumbs.map(t=>`<img src="${t}" alt="">`).join('')}</div>`;
       bodyHtml = canEmbed
-        ? `<div class="preview-embed"><iframe src="https://www.youtube.com/embed/${vid}" title="${escapeHtml(item.title || 'YouTube video player')}" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe></div>`
+        ? `<div class="preview-embed"><iframe src="${youtubeEmbedSrc(vid)}" title="${escapeHtml(item.title || 'YouTube video player')}" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe></div>`
         : `${quadHtml}<div class="field-hint" style="margin-top:8px;">이 파일을 file://로 직접 열면 유튜브가 임베드 재생을 막아요(오류 153). 아래 "원본 열기"로 유튜브에서 보거나, 웹 서버로 배포해서 열면 여기서 바로 재생돼요.</div>`;
     } else {
       const src = thumbs[0] || '';
