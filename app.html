@@ -1964,9 +1964,13 @@
       if(!item) return '';
       // 유튜브 레퍼런스는 메인 화면 카드처럼 무드보드에서도 바로 재생해서 볼 수 있게 한다
       // (호버하면 음소거로 재생, 벗어나면 정지). file://로 직접 연 경우엔 유튜브가 임베드를
-      // 막으므로(오류 153) 그때만 썸네일로 폴백.
+      // 막으므로(오류 153) 그때만 썸네일로 폴백. Document PiP 창(boardWindow) 안에서도 마찬가지로
+      // 폴백한다 — PiP 창은 실제 URL로 이동한 적 없는 about:blank 문서라서(DOM만 채워 넣음),
+      // 그 안에 심은 iframe이 enablejsapi로 유튜브에 요청을 보내면 리퍼러/오리진이 비어있는
+      // 걸로 보여 마찬가지로 오류 153이 뜬다. 메인 화면 카드·프리뷰 라이트박스는 실제 페이지
+      // 문서에서 열리므로(PiP 창 안에 있는 프리뷰 포함, 그건 enablejsapi를 안 씀) 영향 없다.
       const vid = item.type === 'youtube' ? extractYouTubeId(item.url) : null;
-      const canEmbed = vid && location.protocol !== 'file:';
+      const canEmbed = vid && location.protocol !== 'file:' && !boardWindow;
       const mediaHtml = canEmbed
         ? `<iframe src="${youtubeEmbedSrc(vid, { autoplayHover: true })}" title="${escapeHtml(item.title || 'YouTube video player')}" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" loading="lazy"></iframe>`
         : `<img src="${escapeHtml((item.thumbs && item.thumbs[0]) || item.url || '')}" alt="" draggable="false">`;
