@@ -27,7 +27,7 @@ Tauri로 Windows exe도 한 번 만들어봤지만(독립 실행 파일 + NSIS �
   `src-tauri/target/`만 등록되어 있고, `src-tauri/` 자체는 그냥 git add를 안 함).
   다른 컴퓨터에는 이 폴더가 없음 — exe를 다시 만들려면 Rust부터 새로 설치해야 함.
 
-## 지금까지 병합된 작업 (PR #1~#24 + 노트북 세션의 브랜치 병합 1건, 전부 main에 병합됨)
+## 지금까지 병합된 작업 (PR #1~#25 + 노트북 세션의 브랜치 병합 1건, 전부 main에 병합됨)
 
 **PR #1~#5** (초기 단계):
 1. README.md 추가 (첫 PR 연습)
@@ -170,7 +170,33 @@ PR #22의 가장자리 자동 스크롤로 고정 캔버스(2400×1600) 밖으�
 목업 폰트 이름을 직접 주입해 선택→적용→내보내기/불러오기 왕복까지는 검증 완료. 실제 폰트
 목록이 뜨는지는 사용자가 실제 크롬/엣지에서 버튼을 눌러 권한 프롬프트를 직접 확인해야 함.
 
-로컬 `main`은 PR #24 병합 후 `5791eb9`까지 동기화 확인됨.
+**PR #25 (메모에 이미지와 동일한 리치 텍스트 툴바 — 사용자가 참고 이미지 주면서 요청, "이미지와
+동일하게 전부" 선택)**: 메모 본문을 `<textarea>`에서 `contenteditable` div로 바꾸고, 카드 위쪽에
+항상 떠 있는 도구모음 추가: A(글자색)/✏(형광펜)/🪣(카드 배경색, 각각 숨긴 `<input type=color>`를
+버튼이 대신 열어줌) · B/I/U · 🔗(링크, `safeHref()` 검증 + `target=_blank rel=noopener` 강제) ·
+☰(목록) · 정렬(클릭마다 왼쪽→가운데→오른쪽 순환, 라벨이 현재 상태 표시) · 글자크기(px 숫자
+입력)/폰트(PR #24의 `queryLocalFonts()` 재사용) — 텍스트 선택 있으면 그 부분만 span으로 감싸고
+없으면(커서만) 메모 전체 기본 스타일을 바꿈(Google Docs 방식, `execCommand('fontSize','7')`로
+일단 감싼 뒤 실제 px/폰트 스택의 span으로 바꿔치기하는 표준 우회법 사용) · 🧹(서식 지우기) ·
+⤢(크게 보기 토글, 1.6배, 원래 크기는 메모리 Map에만 잠깐 들고 있고 저장 파일엔 안 남음).
+
+placement에 `html`(정제된 리치 콘텐츠)·`bgColor` 필드 추가, `fontSize`/`fontFamily`는 이제
+"선택 없을 때의 기본값" 의미로 재해석됨. 허용 목록 기반 `sanitizeNoteHtml()`을 새로 만들어서
+(태그: b/strong/i/em/u/s/strike/a/ul/ol/li/span/br/div/p, 스타일: color/background-color/
+font-family/font-size/text-align, href는 `safeHref()` 통과) `DOMParser`(문서에 안 붙는 inert
+파싱이라 script 실행·리소스 요청 없음)로 파싱해서 불러오기(`parseAndValidate`)와 매 렌더링
+시점 둘 다에서 돌림 — 렌더링 시점이 실제 보안 경계. PR #24의 우클릭 메뉴 폰트 컨트롤은 이
+툴바가 완전히 대체해서 제거함(우클릭 메뉴는 다시 구조적 동작만).
+
+**테스트 중 발견한 실제 버그**: `execCommand('styleWithCSS')`는 명령마다 따로가 아니라 문서
+전체에 계속 남아있는 상태라서, 색상 명령이 켜둔 styleWithCSS=true가 남은 채로 글자 크기를
+적용하면 `<font size=7>` 감싸기 트릭이 아예 동작을 안 하고(`style="font-size:xxx-large"`가
+기존 태그에 바로 발라짐) 정확한 px 지정이 깨졌음 — `applyInlineStyleToSelection`에서
+styleWithCSS를 명시적으로 끄도록 고침. 악성 payload(`<script>`, `onerror=` 이미지, `javascript:`
+href, 허용 안 된 스타일/태그)를 실제 내보내기→불러오기 경로로 통과시켜서 데이터·렌더링 DOM
+양쪽에서 다 걸러지는 것까지 synthetic 이벤트로 검증 완료.
+
+로컬 `main`은 PR #25 병합 후 `d1737f6`까지 동기화 확인됨.
 
 ## 중요한 결정/맥락 (git 로그엔 안 보이는 부분)
 - Windows Smart App Control이 Tauri/Rust 빌드를 막은 적 있음(사용자가 직접 설정 껐음 — 보안 설정은
